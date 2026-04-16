@@ -4,11 +4,15 @@ export type ConditionType =
   | 'TOKEN_VOLUME'
   | 'LARGE_TRANSFER';
 
-export type ActionType = 'NOTIFY' | 'WEBHOOK' | 'LOG';
+export type ActionType = 'NOTIFY' | 'WEBHOOK' | 'LOG' | "TRADE";
 
 export interface ExecutionAction {
   type: ActionType;
   webhookUrl?: string;
+   tradeDirection?:   'BUY' | 'SELL';
+  tradeTokenMint?:   string;
+  tradeAmountSol?:   number;
+  tradeSlippageBps?: number;
 }
 
 export interface Condition {

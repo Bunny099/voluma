@@ -7,7 +7,7 @@ import { Label }     from '@/components/ui/label';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
-import { type Condition, type ConditionWithStats } from '../conditions/types';
+import { type Condition, type ConditionWithStats, type ExecutionAction } from '../conditions/types';
 
 const BASE = () => process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
@@ -29,10 +29,10 @@ const defaultForm = (): Partial<Condition> => ({
 });
 
 interface WebhookTestResult {
-  success:    boolean;
+  success:     boolean;
   statusCode?: number;
-  durationMs: number;
-  error?:     string;
+  durationMs:  number;
+  error?:      string;
 }
 
 interface Props {
@@ -51,6 +51,14 @@ export default function ConditionBuilder({ userId, onCreated }: Props) {
   const set = <K extends keyof Condition>(k: K, v: Condition[K]) =>
     setForm(prev => ({ ...prev, [k]: v }));
 
+  const currentAction = form.actions?.[0] as ExecutionAction | undefined;
+
+  const setAction = (update: Partial<ExecutionAction>) => {
+    set('actions', [{ ...currentAction, ...update } as ExecutionAction]);
+  };
+
+  // ── Submit ──────────────────────────────────────────────────────────────────────
+
   const handleSubmit = async () => {
     setError(null);
     setSaving(true);
@@ -63,7 +71,6 @@ export default function ConditionBuilder({ userId, onCreated }: Props) {
       const data = await res.json();
       if (!res.ok) { setError(JSON.stringify(data.error ?? data, null, 2)); return; }
 
-      
       const optimistic: ConditionWithStats = {
         id:              data.id,
         userId,
@@ -85,7 +92,7 @@ export default function ConditionBuilder({ userId, onCreated }: Props) {
         lastTriggered:   null,
       };
 
-      onCreated?.(optimistic); 
+      onCreated?.(optimistic);
       setSaved(true);
       setForm(defaultForm());
       setWebhookResult(null);
@@ -97,8 +104,10 @@ export default function ConditionBuilder({ userId, onCreated }: Props) {
     }
   };
 
+  // ── Test webhook ────────────────────────────────────────────────────────────────
+
   const handleTestWebhook = async () => {
-    const url = (form.actions?.[0] as any)?.webhookUrl as string | undefined;
+    const url = currentAction?.webhookUrl;
     if (!url) return;
     setTestingWebhook(true);
     setWebhookResult(null);
@@ -115,8 +124,6 @@ export default function ConditionBuilder({ userId, onCreated }: Props) {
       setTestingWebhook(false);
     }
   };
-
-  const webhookUrl = (form.actions?.[0] as any)?.webhookUrl as string | undefined;
 
   return (
     <div className="space-y-5">
@@ -137,7 +144,7 @@ export default function ConditionBuilder({ userId, onCreated }: Props) {
         />
       </div>
 
-      {/* Type */}
+      {/* Condition type */}
       <div className="space-y-1.5">
         <Label className="text-xs text-zinc-400">Condition type</Label>
         <Select value={form.type} onValueChange={v => set('type', v as Condition['type'])}>
@@ -157,20 +164,15 @@ export default function ConditionBuilder({ userId, onCreated }: Props) {
         <div className="space-y-4 p-4 rounded-lg bg-zinc-900/60 border border-zinc-800">
           <div className="space-y-1.5">
             <Label className="text-xs text-zinc-400">Wallet address</Label>
-            <Input
-              placeholder="7xKX…abc"
-              value={form.wallet ?? ''}
+            <Input placeholder="7xKX…abc" value={form.wallet ?? ''}
               onChange={e => set('wallet', e.target.value)}
-              className="bg-zinc-800 border-zinc-700 font-mono text-xs h-9 text-zinc-100"
-            />
+              className="bg-zinc-800 border-zinc-700 font-mono text-xs h-9 text-zinc-100" />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label className="text-xs text-zinc-400">Transaction type</Label>
-              <Select
-                value={form.transactionType ?? 'ANY'}
-                onValueChange={v => set('transactionType', v as Condition['transactionType'])}
-              >
+              <Select value={form.transactionType ?? 'ANY'}
+                onValueChange={v => set('transactionType', v as Condition['transactionType'])}>
                 <SelectTrigger className="bg-zinc-800 border-zinc-700 text-zinc-100 h-9 text-sm">
                   <SelectValue />
                 </SelectTrigger>
@@ -183,12 +185,10 @@ export default function ConditionBuilder({ userId, onCreated }: Props) {
             </div>
             <div className="space-y-1.5">
               <Label className="text-xs text-zinc-400">Min amount (SOL)</Label>
-              <Input
-                type="number" min={0} step={0.1} placeholder="0.1"
+              <Input type="number" min={0} step={0.1} placeholder="0.1"
                 value={form.minAmountSol ?? ''}
                 onChange={e => set('minAmountSol', e.target.value ? Number(e.target.value) : undefined)}
-                className="bg-zinc-800 border-zinc-700 text-zinc-100 text-sm h-9"
-              />
+                className="bg-zinc-800 border-zinc-700 text-zinc-100 text-sm h-9" />
             </div>
           </div>
         </div>
@@ -199,38 +199,29 @@ export default function ConditionBuilder({ userId, onCreated }: Props) {
         <div className="space-y-4 p-4 rounded-lg bg-zinc-900/60 border border-zinc-800">
           <div className="space-y-1.5">
             <Label className="text-xs text-zinc-400">Token mint (blank = any)</Label>
-            <Input
-              placeholder="So11…11112"
-              value={form.tokenMint ?? ''}
+            <Input placeholder="So11…11112" value={form.tokenMint ?? ''}
               onChange={e => set('tokenMint', e.target.value || undefined)}
-              className="bg-zinc-800 border-zinc-700 font-mono text-xs h-9 text-zinc-100"
-            />
+              className="bg-zinc-800 border-zinc-700 font-mono text-xs h-9 text-zinc-100" />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label className="text-xs text-zinc-400">
                 {form.type === 'SWAP_BURST' ? 'Min swaps in window' : 'Min volume (SOL)'}
               </Label>
-              <Input
-                type="number" min={0}
+              <Input type="number" min={0}
                 placeholder={form.type === 'SWAP_BURST' ? '50' : '10000'}
                 value={form.type === 'SWAP_BURST' ? (form.minSwaps ?? '') : (form.minVolumeSol ?? '')}
-                onChange={e =>
-                  form.type === 'SWAP_BURST'
-                    ? set('minSwaps',     e.target.value ? Number(e.target.value) : undefined)
-                    : set('minVolumeSol', e.target.value ? Number(e.target.value) : undefined)
-                }
-                className="bg-zinc-800 border-zinc-700 text-zinc-100 text-sm h-9"
-              />
+                onChange={e => form.type === 'SWAP_BURST'
+                  ? set('minSwaps',     e.target.value ? Number(e.target.value) : undefined)
+                  : set('minVolumeSol', e.target.value ? Number(e.target.value) : undefined)}
+                className="bg-zinc-800 border-zinc-700 text-zinc-100 text-sm h-9" />
             </div>
             <div className="space-y-1.5">
               <Label className="text-xs text-zinc-400">Window (seconds)</Label>
-              <Input
-                type="number" min={5} max={3600} placeholder="30"
+              <Input type="number" min={5} max={3600} placeholder="30"
                 value={form.windowSeconds ?? ''}
                 onChange={e => set('windowSeconds', e.target.value ? Number(e.target.value) : undefined)}
-                className="bg-zinc-800 border-zinc-700 text-zinc-100 text-sm h-9"
-              />
+                className="bg-zinc-800 border-zinc-700 text-zinc-100 text-sm h-9" />
             </div>
           </div>
         </div>
@@ -240,57 +231,51 @@ export default function ConditionBuilder({ userId, onCreated }: Props) {
       {form.type === 'LARGE_TRANSFER' && (
         <div className="p-4 rounded-lg bg-zinc-900/60 border border-zinc-800 space-y-1.5">
           <Label className="text-xs text-zinc-400">Minimum transfer (SOL)</Label>
-          <Input
-            type="number" min={0} placeholder="100"
+          <Input type="number" min={0} placeholder="100"
             value={form.minSol ?? ''}
             onChange={e => set('minSol', e.target.value ? Number(e.target.value) : undefined)}
-            className="bg-zinc-800 border-zinc-700 text-zinc-100 text-sm h-9"
-          />
+            className="bg-zinc-800 border-zinc-700 text-zinc-100 text-sm h-9" />
         </div>
       )}
 
-      {/* Action */}
+      {/* Action type selector */}
       <div className="space-y-1.5">
         <Label className="text-xs text-zinc-400">Action</Label>
         <Select
-          value={form.actions?.[0]?.type ?? 'NOTIFY'}
+          value={currentAction?.type ?? 'NOTIFY'}
           onValueChange={v => {
             setWebhookResult(null);
-            set('actions', [{ type: v as 'NOTIFY' | 'WEBHOOK' | 'LOG' }]);
+            set('actions', [{ type: v as ExecutionAction['type'] }]);
           }}
         >
           <SelectTrigger className="bg-zinc-900 border-zinc-700 text-zinc-100 h-9 text-sm">
             <SelectValue />
           </SelectTrigger>
           <SelectContent className="bg-zinc-900 border-zinc-700">
-            <SelectItem value="NOTIFY"  className="text-zinc-200 text-sm">Push notification (in-app)</SelectItem>
+            <SelectItem value="NOTIFY"  className="text-zinc-200 text-sm">Push notification</SelectItem>
             <SelectItem value="WEBHOOK" className="text-zinc-200 text-sm">HTTP webhook</SelectItem>
             <SelectItem value="LOG"     className="text-zinc-200 text-sm">Log only</SelectItem>
+            <SelectItem value="TRADE"   className="text-zinc-200 text-sm">
+              ◎ Automated trade (Jupiter)
+            </SelectItem>
           </SelectContent>
         </Select>
       </div>
 
-      {/* Webhook URL + test */}
-      {form.actions?.[0]?.type === 'WEBHOOK' && (
+      {/* WEBHOOK config */}
+      {currentAction?.type === 'WEBHOOK' && (
         <div className="space-y-2">
           <Label className="text-xs text-zinc-400">Webhook URL</Label>
           <div className="flex gap-2">
             <Input
               placeholder="https://your-server.com/hook"
-              value={webhookUrl ?? ''}
-              onChange={e => {
-                setWebhookResult(null);
-                set('actions', [{ type: 'WEBHOOK', webhookUrl: e.target.value }]);
-              }}
+              value={currentAction?.webhookUrl ?? ''}
+              onChange={e => setAction({ webhookUrl: e.target.value })}
               className="bg-zinc-900 border-zinc-700 text-zinc-100 text-sm h-9 flex-1"
             />
-            <Button
-              type="button"
-              variant="outline"
-              onClick={handleTestWebhook}
-              disabled={testingWebhook || !webhookUrl}
-              className="h-9 px-3 text-xs border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 shrink-0"
-            >
+            <Button type="button" variant="outline" onClick={handleTestWebhook}
+              disabled={testingWebhook || !currentAction?.webhookUrl}
+              className="h-9 px-3 text-xs border-zinc-700 text-zinc-400 hover:text-zinc-200 shrink-0">
               {testingWebhook ? 'Sending…' : 'Test'}
             </Button>
           </div>
@@ -308,18 +293,97 @@ export default function ConditionBuilder({ userId, onCreated }: Props) {
         </div>
       )}
 
+      {/* TRADE config */}
+      {currentAction?.type === 'TRADE' && (
+        <div className="space-y-4 p-4 rounded-lg bg-zinc-900/60 border border-zinc-800">
+          {/* Direction toggle */}
+          <div className="space-y-1.5">
+            <Label className="text-xs text-zinc-400">Direction</Label>
+            <div className="flex gap-1 bg-zinc-800 p-0.5 rounded-lg w-fit">
+              {(['BUY', 'SELL'] as const).map(dir => (
+                <button
+                  key={dir}
+                  type="button"
+                  onClick={() => setAction({ tradeDirection: dir })}
+                  className={`
+                    px-4 py-1.5 text-xs font-medium rounded-md transition-colors
+                    ${currentAction.tradeDirection === dir
+                      ? dir === 'BUY'
+                        ? 'bg-emerald-600 text-white'
+                        : 'bg-red-600    text-white'
+                      : 'text-zinc-500 hover:text-zinc-300'
+                    }
+                  `}
+                >
+                  {dir === 'BUY' ? '↑ BUY' : '↓ SELL'}
+                </button>
+              ))}
+            </div>
+            <p className="text-[10px] text-zinc-600">
+              {currentAction.tradeDirection === 'BUY'
+                ? 'Spend SOL to buy the specified token'
+                : 'Sell the specified token, receive SOL'
+              }
+            </p>
+          </div>
+
+          {/* Token mint */}
+          <div className="space-y-1.5">
+            <Label className="text-xs text-zinc-400">Token mint address</Label>
+            <Input
+              placeholder="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+              value={currentAction.tradeTokenMint ?? ''}
+              onChange={e => setAction({ tradeTokenMint: e.target.value })}
+              className="bg-zinc-800 border-zinc-700 font-mono text-xs h-9 text-zinc-100"
+            />
+          </div>
+
+          {/* Amount + Slippage */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label className="text-xs text-zinc-400">
+                {currentAction.tradeDirection === 'BUY' ? 'SOL to spend' : 'SOL to receive'}
+              </Label>
+              <Input
+                type="number" min={0.001} max={100} step={0.01}
+                placeholder="0.1"
+                value={currentAction.tradeAmountSol ?? ''}
+                onChange={e => setAction({ tradeAmountSol: e.target.value ? Number(e.target.value) : undefined })}
+                className="bg-zinc-800 border-zinc-700 text-zinc-100 text-sm h-9"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs text-zinc-400">Slippage (bps)</Label>
+              <Input
+                type="number" min={0} max={5000} step={10}
+                placeholder="100"
+                value={currentAction.tradeSlippageBps ?? ''}
+                onChange={e => setAction({ tradeSlippageBps: e.target.value ? Number(e.target.value) : undefined })}
+                className="bg-zinc-800 border-zinc-700 text-zinc-100 text-sm h-9"
+              />
+            </div>
+          </div>
+
+          {/* Info box */}
+          <div className="bg-zinc-800/60 rounded-lg px-3 py-2">
+            <p className="text-[10px] text-zinc-500 leading-relaxed">
+              Requires a funded trading wallet. Create one in the Wallet tab.
+              Trades execute via Jupiter — execution is automatic and cannot be reversed.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Cooldown */}
       <div className="flex items-center justify-between">
         <div>
           <p className="text-xs text-zinc-300">Cooldown</p>
           <p className="text-[11px] text-zinc-600">Seconds before condition can re-fire</p>
         </div>
-        <Input
-          type="number" min={0}
+        <Input type="number" min={0}
           value={form.cooldownSeconds ?? 60}
           onChange={e => set('cooldownSeconds', Number(e.target.value))}
-          className="w-20 bg-zinc-900 border-zinc-700 text-zinc-100 text-sm h-8 text-right"
-        />
+          className="w-20 bg-zinc-900 border-zinc-700 text-zinc-100 text-sm h-8 text-right" />
       </div>
 
       <Button

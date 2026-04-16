@@ -1,7 +1,17 @@
 'use client';
 import { useEffect, useRef, useState, useCallback } from 'react';
 
-export type ErrorType = 'timeout' | 'network' | 'bad_request' | 'server_error' | 'invalid_url';
+export type ErrorType =
+  | 'timeout' | 'network' | 'bad_request'
+  | 'server_error' | 'invalid_url' | 'trade_error' | 'no_wallet';
+
+export interface TradeResultPayload {
+  txHash?:    string;
+  inputMint:  string;
+  outputMint: string;
+  amountIn:   number;
+  latencyMs:  number;
+}
 
 export interface ActionResult {
   type:            string;
@@ -11,13 +21,10 @@ export interface ActionResult {
   error?:          string;
   errorType?:      ErrorType;
   responseStatus?: number;
+  tradeResult?:    TradeResultPayload;
 }
 
-export interface ExecutionSummary {
-  total:   number;
-  success: number;
-  failed:  number;
-}
+export interface ExecutionSummary { total: number; success: number; failed: number; }
 
 export interface TriggerExplanation {
   reason:        string;
@@ -45,8 +52,9 @@ export interface TriggerEvent {
   matchedAt:     number;
   explanation?:  TriggerExplanation;
   execution?: {
-    actions: ActionResult[];
-    summary: ExecutionSummary;
+    deliveryId: string;
+    actions:    ActionResult[];
+    summary:    ExecutionSummary;
   };
 }
 
@@ -66,12 +74,9 @@ export function useSocket(userId: string) {
 
   const connect = useCallback(() => {
     if (!mountedRef.current) return;
-
     const base = (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001')
-      .replace(/^https/, 'wss')
-      .replace(/^http/,  'ws');
-
-    const ws = new WebSocket(`${base}/ws?userId=${encodeURIComponent(userId)}`);
+      .replace(/^https/, 'wss').replace(/^http/, 'ws');
+    const ws   = new WebSocket(`${base}/ws?userId=${encodeURIComponent(userId)}`);
     wsRef.current = ws;
 
     ws.onopen  = () => { if (mountedRef.current) setConnected(true); };
@@ -90,21 +95,17 @@ export function useSocket(userId: string) {
       if (msg.type === 'LIVE_EVENT') {
         setLiveEvents(prev => [msg as unknown as LiveEvent, ...prev].slice(0, MAX_LIVE_EVENTS));
       }
-
       if (msg.type === 'TRIGGER') {
         const trigger = msg as unknown as TriggerEvent;
         setTriggers(prev => [trigger, ...prev].slice(0, MAX_TRIGGERS));
-
-     
         if (trigger.signature && trigger.conditionName) {
           setTriggeredSigs(prev => {
-            if (prev.has(trigger.signature)) return prev; 
+            if (prev.has(trigger.signature)) return prev;
             const next = new Map(prev);
             next.set(trigger.signature, trigger.conditionName);
-         
             if (next.size > MAX_TRIGGERED_SIGS) {
-              const entries = [...next.entries()];
-              return new Map(entries.slice(entries.length - MAX_TRIGGERED_SIGS));
+              const arr = [...next.entries()];
+              return new Map(arr.slice(arr.length - MAX_TRIGGERED_SIGS));
             }
             return next;
           });
@@ -124,6 +125,5 @@ export function useSocket(userId: string) {
   }, [connect]);
 
   const clearTriggers = useCallback(() => setTriggers([]), []);
-
   return { connected, liveEvents, triggers, triggeredSigs, clearTriggers };
 }
