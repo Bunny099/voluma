@@ -1,7 +1,17 @@
 'use client';
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
-export type ErrorType = 'timeout' | 'network' | 'bad_request' | 'server_error' | 'invalid_url';
+export type ErrorType =
+  | 'timeout' | 'network' | 'bad_request'
+  | 'server_error' | 'invalid_url' | 'trade_error' | 'no_wallet' | 'no_balance';
+
+export interface TradeResultPayload {
+  txHash?:    string;
+  inputMint:  string;
+  outputMint: string;
+  amountIn:   number;
+  latencyMs:  number;
+}
 
 export interface ActionResult {
   type:            string;
@@ -11,13 +21,10 @@ export interface ActionResult {
   error?:          string;
   errorType?:      ErrorType;
   responseStatus?: number;
+  tradeResult?:    TradeResultPayload;
 }
 
-export interface ExecutionSummary {
-  total:   number;
-  success: number;
-  failed:  number;
-}
+export interface ExecutionSummary { total: number; success: number; failed: number; }
 
 export interface TriggerExplanation {
   reason:        string;
@@ -45,85 +52,272 @@ export interface TriggerEvent {
   matchedAt:     number;
   explanation?:  TriggerExplanation;
   execution?: {
-    actions: ActionResult[];
-    summary: ExecutionSummary;
+    deliveryId: string;
+    actions:    ActionResult[];
+    summary:    ExecutionSummary;
   };
+}
+
+
+export interface TradeToast {
+  id:        string;
+  kind:      'success' | 'error' | 'pending';
+  message:   string;
+  txHash?:   string;
+  timestamp: number;
+}
+
+export interface PendingTxInfo {
+  txHash:    string;
+  status:    'PENDING' | 'CONFIRMED' | 'FAILED';
+  inputMint: string;
+  outputMint: string;
+  amountIn:  number;
+  createdAt: number;
 }
 
 const MAX_LIVE_EVENTS    = 200;
 const MAX_TRIGGERS       = 100;
 const MAX_TRIGGERED_SIGS = 500;
+const BASE_RECONNECT_MS  = 1_500;
+const MAX_RECONNECT_MS   = 30_000;
 
 export function useSocket(userId: string) {
-  const wsRef        = useRef<WebSocket | null>(null);
-  const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const mountedRef   = useRef(true);
-
   const [connected,     setConnected]     = useState(false);
   const [liveEvents,    setLiveEvents]    = useState<LiveEvent[]>([]);
   const [triggers,      setTriggers]      = useState<TriggerEvent[]>([]);
   const [triggeredSigs, setTriggeredSigs] = useState<Map<string, string>>(new Map());
+  const [pendingTxs,    setPendingTxs]    = useState<PendingTxInfo[]>([]);
+  // Fix 6: trade toast queue
+  const [tradeToasts,   setTradeToasts]   = useState<TradeToast[]>([]);
 
-  const connect = useCallback(() => {
-    if (!mountedRef.current) return;
+  const wsRef          = useRef<WebSocket | null>(null);
+  const retryTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retryDelayRef  = useRef(BASE_RECONNECT_MS);
+  const generationRef  = useRef(0);
 
-    const base = (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001')
-      .replace(/^https/, 'wss')
-      .replace(/^http/,  'ws');
+  const setLiveEventsRef    = useRef(setLiveEvents);
+  const setTriggersRef      = useRef(setTriggers);
+  const setTriggeredSigsRef = useRef(setTriggeredSigs);
+  const setTradeToastsRef   = useRef(setTradeToasts);
+  const setPendingTxsRef    = useRef(setPendingTxs);
+  setLiveEventsRef.current    = setLiveEvents;
+  setTriggersRef.current      = setTriggers;
+  setTriggeredSigsRef.current = setTriggeredSigs;
+  setTradeToastsRef.current  = setTradeToasts;
+  setPendingTxsRef.current   = setPendingTxs;
 
-    const ws = new WebSocket(`${base}/ws?userId=${encodeURIComponent(userId)}`);
-    wsRef.current = ws;
+  // Callback ref wired by dashboard page to refresh the wallet
+  const onTradeSuccessRef = useRef<(() => void) | null>(null);
 
-    ws.onopen  = () => { if (mountedRef.current) setConnected(true); };
-    ws.onclose = () => {
-      if (!mountedRef.current) return;
-      setConnected(false);
-      reconnectRef.current = setTimeout(connect, 2_000);
-    };
-    ws.onerror = () => ws.close();
+  useEffect(() => {
+    if (!userId) return;
 
-    ws.onmessage = (evt) => {
-      if (!mountedRef.current) return;
-      let msg: Record<string, unknown>;
-      try { msg = JSON.parse(evt.data as string); } catch { return; }
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
 
-      if (msg.type === 'LIVE_EVENT') {
-        setLiveEvents(prev => [msg as unknown as LiveEvent, ...prev].slice(0, MAX_LIVE_EVENTS));
+    generationRef.current += 1;
+    const myGeneration = generationRef.current;
+
+    if (wsRef.current) {
+      const old = wsRef.current;
+      old.onopen    = null;
+      old.onclose   = null;
+      old.onerror   = null;
+      old.onmessage = null;
+      if (old.readyState !== WebSocket.CLOSED && old.readyState !== WebSocket.CLOSING) {
+        old.close();
+      }
+      wsRef.current = null;
+    }
+
+    setConnected(false);
+    retryDelayRef.current = BASE_RECONNECT_MS;
+
+    function pushToast(toast: Omit<TradeToast, 'id' | 'timestamp'>) {
+      const entry: TradeToast = {
+        ...toast,
+        id:        Math.random().toString(36).slice(2),
+        timestamp: Date.now(),
+      };
+      setTradeToastsRef.current(prev => [entry, ...prev].slice(0, 10));
+      // Auto-dismiss after 6s
+      setTimeout(() => {
+        setTradeToastsRef.current(prev => prev.filter(t => t.id !== entry.id));
+      }, 6_000);
+    }
+
+    function openSocket() {
+      if (generationRef.current !== myGeneration) return;
+
+      const base = (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001')
+        .replace(/^https/, 'wss')
+        .replace(/^http/,  'ws');
+
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(`${base}/ws?userId=${encodeURIComponent(userId)}`);
+      } catch {
+        scheduleReconnect();
+        return;
       }
 
-      if (msg.type === 'TRIGGER') {
-        const trigger = msg as unknown as TriggerEvent;
-        setTriggers(prev => [trigger, ...prev].slice(0, MAX_TRIGGERS));
+      wsRef.current = ws;
 
-     
-        if (trigger.signature && trigger.conditionName) {
-          setTriggeredSigs(prev => {
-            if (prev.has(trigger.signature)) return prev; 
-            const next = new Map(prev);
-            next.set(trigger.signature, trigger.conditionName);
+      ws.onopen = () => {
+        if (generationRef.current !== myGeneration) { ws.close(); return; }
+        setConnected(true);
+        retryDelayRef.current = BASE_RECONNECT_MS;
+      };
+
+      ws.onclose = (evt) => {
+        if (generationRef.current !== myGeneration) return;
+        setConnected(false);
+        if (evt.code === 1008) return;
+        scheduleReconnect();
+      };
+
+      ws.onerror = () => {
+        if (generationRef.current !== myGeneration) return;
+        setConnected(false);
+      };
+
+      ws.onmessage = (evt) => {
+        if (generationRef.current !== myGeneration) return;
+
+        let msg: Record<string, unknown>;
+        try { msg = JSON.parse(evt.data as string); }
+        catch { return; }
+
+      
+        if (msg.type === 'LIVE_EVENT') {
+          setLiveEventsRef.current(prev =>
+            [msg as unknown as LiveEvent, ...prev].slice(0, MAX_LIVE_EVENTS)
+          );
+        }
+
+      
+        if (msg.type === 'TRIGGER') {
+          const trigger = msg as unknown as TriggerEvent;
+          setTriggersRef.current(prev => [trigger, ...prev].slice(0, MAX_TRIGGERS));
+
+          if (trigger.signature && trigger.conditionName) {
+            setTriggeredSigsRef.current(prev => {
+              if (prev.has(trigger.signature)) return prev;
+              const next = new Map(prev);
+              next.set(trigger.signature, trigger.conditionName);
+              if (next.size > MAX_TRIGGERED_SIGS) {
+                const arr = [...next.entries()];
+                return new Map(arr.slice(arr.length - MAX_TRIGGERED_SIGS));
+              }
+              return next;
+            });
+          }
+        }
+
+      
+        if (msg.type === 'TRADE_SUCCESS') {
+          if (onTradeSuccessRef.current) onTradeSuccessRef.current();
+          const txHash = msg.txHash as string | undefined;
+          pushToast({
+            kind:    'success',
+            message: `Trade submitted${txHash ? '' : ' — no tx hash'}`,
+            txHash,
+          });
          
-            if (next.size > MAX_TRIGGERED_SIGS) {
-              const entries = [...next.entries()];
-              return new Map(entries.slice(entries.length - MAX_TRIGGERED_SIGS));
-            }
-            return next;
+          setPendingTxsRef.current(prev => prev.filter(t => t.txHash !== txHash));
+        }
+
+        if (msg.type === 'TRADE_FAILED') {
+          if (onTradeSuccessRef.current) onTradeSuccessRef.current();
+          pushToast({
+            kind:    'error',
+            message: (msg.error as string) ?? 'Trade failed',
           });
         }
+
+     
+        if (msg.type === 'TRADE_PENDING') {
+          const txHash = msg.txHash as string;
+          setPendingTxsRef.current(prev => {
+            if (prev.some(t => t.txHash === txHash)) return prev;
+            return [...prev, {
+              txHash,
+              status:    'PENDING',
+              inputMint:  (msg.inputMint as string) ?? '',
+              outputMint: (msg.outputMint as string) ?? '',
+              amountIn:   (msg.amountIn as number) ?? 0,
+              createdAt:  Date.now(),
+            }];
+          });
+          if (onTradeSuccessRef.current) onTradeSuccessRef.current();
+          pushToast({
+            kind:    'pending',
+            message: 'Trade submitted — awaiting confirmation',
+            txHash,
+          });
+        }
+
+        if (msg.type === 'TRADE_CONFIRMED') {
+          const txHash = msg.txHash as string;
+          setPendingTxsRef.current(prev => prev.filter(t => t.txHash !== txHash));
+          if (onTradeSuccessRef.current) onTradeSuccessRef.current();
+          pushToast({
+            kind:    'success',
+            message: 'Trade confirmed on-chain',
+            txHash,
+          });
+        }
+      };
+    }
+
+    function scheduleReconnect() {
+      if (generationRef.current !== myGeneration) return;
+      retryTimerRef.current = setTimeout(() => {
+        retryDelayRef.current = Math.min(retryDelayRef.current * 1.5, MAX_RECONNECT_MS);
+        openSocket();
+      }, retryDelayRef.current);
+    }
+
+    openSocket();
+
+    return () => {
+      generationRef.current += 1;
+      if (retryTimerRef.current) {
+        clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
       }
+      if (wsRef.current) {
+        const ws = wsRef.current;
+        ws.onopen    = null;
+        ws.onclose   = null;
+        ws.onerror   = null;
+        ws.onmessage = null;
+        if (ws.readyState !== WebSocket.CLOSED && ws.readyState !== WebSocket.CLOSING) {
+          ws.close();
+        }
+        wsRef.current = null;
+      }
+      setConnected(false);
     };
   }, [userId]);
 
-  useEffect(() => {
-    mountedRef.current = true;
-    connect();
-    return () => {
-      mountedRef.current = false;
-      if (reconnectRef.current) clearTimeout(reconnectRef.current);
-      wsRef.current?.close();
-    };
-  }, [connect]);
+  const clearTriggers  = () => setTriggers([]);
+  const dismissToast   = (id: string) => setTradeToasts(prev => prev.filter(t => t.id !== id));
+  const clearPendingTx = (txHash: string) => setPendingTxs(prev => prev.filter(t => t.txHash !== txHash));
 
-  const clearTriggers = useCallback(() => setTriggers([]), []);
-
-  return { connected, liveEvents, triggers, triggeredSigs, clearTriggers };
+  return {
+    connected,
+    liveEvents,
+    triggers,
+    triggeredSigs,
+    clearTriggers,
+    tradeToasts,
+    dismissToast,
+    pendingTxs,
+    clearPendingTx,
+    _onTradeSuccessRef: onTradeSuccessRef,
+  };
 }

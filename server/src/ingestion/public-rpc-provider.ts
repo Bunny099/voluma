@@ -12,8 +12,25 @@ const DEX_PROGRAMS = [
   'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK',
 ] as const;
 
-const SYSTEM_PROGRAM = '11111111111111111111111111111111';
-const PUBKEY_RE      = /[A-HJ-NP-Za-km-z1-9]{43,44}/g;
+const SYSTEM_PROGRAM      = '11111111111111111111111111111111';
+const TOKEN_PROGRAM       = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+const TOKEN_2022_PROGRAM  = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
+
+// All pubkeys that are programs, not token mints
+const KNOWN_PROGRAMS = new Set([
+  ...DEX_PROGRAMS,
+  SYSTEM_PROGRAM,
+  TOKEN_PROGRAM,
+  TOKEN_2022_PROGRAM,
+  'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe1bR',
+  'ComputeBudget111111111111111111111111111111',
+]);
+
+// base58 pubkey (43–44 chars, excludes 0/O/I/l)
+const PUBKEY_RE  = /[A-HJ-NP-Za-km-z1-9]{43,44}/g;
+// Explicit "mint:" / "Mint:" log pattern emitted by some programs
+const MINT_LOG_RE = /[Mm]int[:\s=]+([A-HJ-NP-Za-km-z1-9]{43,44})/;
+
 const DEDUP_MAX      = 12_000;
 const DEDUP_CLEAN_MS = 4 * 60 * 1_000;
 
@@ -39,7 +56,7 @@ export class PublicRPCProvider extends EventEmitter implements IngestionProvider
   watchWallet(wallet: string):   void { this.watchedWallets.add(wallet);    }
   unwatchWallet(wallet: string): void { this.watchedWallets.delete(wallet); }
 
-  // ── WebSocket lifecycle ─────────────────────────────────────────────────
+  // ── WebSocket lifecycle ─────────────────────────────────────────────────────
 
   private openWS(): void {
     try { this.ws = new WebSocket(RPC_WSS); } catch { this.scheduleReconnect(); return; }
@@ -84,7 +101,7 @@ export class PublicRPCProvider extends EventEmitter implements IngestionProvider
     }
   }
 
-  // ── Message handling ────────────────────────────────────────────────────
+  // ── Message handling ────────────────────────────────────────────────────────
 
   private handleMessage(raw: string): void {
     let msg: any;
@@ -107,12 +124,13 @@ export class PublicRPCProvider extends EventEmitter implements IngestionProvider
     this.emit('transaction', event);
   }
 
-  // ── Log parsing ─────────────────────────────────────────────────────────
+  // ── Log parsing ─────────────────────────────────────────────────────────────
 
   private parse(signature: string, logs: string[]): NormalizedEvent {
+    // Pre-compute joined once — reused by type detection, extraction, and stored in event
     const joined = logs.join('\n');
 
-    // ── Type detection ──
+    // ── Type detection ──────────────────────────────────────────────────────
     let type: NormalizedEvent['type'] = 'UNKNOWN';
     let programId: string | undefined;
 
@@ -121,12 +139,12 @@ export class PublicRPCProvider extends EventEmitter implements IngestionProvider
     }
     if (type === 'UNKNOWN' && joined.includes(SYSTEM_PROGRAM)) type = 'TRANSFER';
 
-    // ── Wallet detection (multi-pass) ──
+    // ── Wallet detection ────────────────────────────────────────────────────
     let wallet:     string | undefined;
     let confidence: NormalizedEvent['confidence'] = 'LOW';
 
     if (this.watchedWallets.size > 0) {
-      // Pass 1: exact pubkey match in log lines
+  
       outer: for (const line of logs) {
         for (const candidate of (line.match(PUBKEY_RE) ?? [])) {
           if (this.watchedWallets.has(candidate)) {
@@ -136,8 +154,7 @@ export class PublicRPCProvider extends EventEmitter implements IngestionProvider
           }
         }
       }
-
-      // Pass 2: prefix heuristic (first 6 chars match)
+   
       if (!wallet) {
         outer: for (const line of logs) {
           for (const candidate of (line.match(PUBKEY_RE) ?? [])) {
@@ -153,24 +170,14 @@ export class PublicRPCProvider extends EventEmitter implements IngestionProvider
       }
     }
 
-    // ── Token mint: first pubkey that isn't a known program ──
-    const knownPrograms = new Set([...DEX_PROGRAMS, SYSTEM_PROGRAM]);
-    let tokenMint: string | undefined;
-    for (const line of logs) {
-      for (const c of (line.match(PUBKEY_RE) ?? [])) {
-        if (!knownPrograms.has(c)) { tokenMint = c; break; }
-      }
-      if (tokenMint) break;
-    }
+    const tokenMint = this.extractTokenMint(logs, joined);
 
-    // ── Amount ──
+    // ── Amount ──────────────────────────────────────────────────────────────
     const amountMatch = joined.match(/amount[:\s]+(\d{4,})/i);
     const amount      = amountMatch ? Number(amountMatch[1]) : undefined;
 
-    // Bump confidence if we found an amount but no wallet
     if (amount && confidence === 'LOW') confidence = 'MEDIUM';
 
-    
     return {
       signature,
       timestamp: Date.now(),
@@ -180,10 +187,48 @@ export class PublicRPCProvider extends EventEmitter implements IngestionProvider
       tokenMint,
       amount,
       confidence,
+      rawLogs: joined,
     };
   }
 
-  // ── Helpers ─────────────────────────────────────────────────────────────
+  
+  private extractTokenMint(logs: string[], joined: string): string | undefined {
+    const mintPatternMatch = joined.match(MINT_LOG_RE);
+    if (mintPatternMatch) {
+      const candidate = mintPatternMatch[1];
+      if (!KNOWN_PROGRAMS.has(candidate)) return candidate;
+    }
+
+    const freq = new Map<string, number>();
+    for (const line of logs) {
+      PUBKEY_RE.lastIndex = 0;
+      for (const candidate of (line.match(PUBKEY_RE) ?? [])) {
+        if (!KNOWN_PROGRAMS.has(candidate)) {
+          freq.set(candidate, (freq.get(candidate) ?? 0) + 1);
+        }
+      }
+    }
+
+    let bestMint:  string | undefined;
+    let bestCount = 1; 
+    for (const [mint, count] of freq) {
+      if (count > bestCount) { bestCount = count; bestMint = mint; }
+    }
+
+    if (!bestMint) {
+      for (const line of logs) {
+        PUBKEY_RE.lastIndex = 0;
+        for (const candidate of (line.match(PUBKEY_RE) ?? [])) {
+          if (!KNOWN_PROGRAMS.has(candidate)) { bestMint = candidate; break; }
+        }
+        if (bestMint) break;
+      }
+    }
+
+    return bestMint;
+  }
+
+  // ── Helpers ─────────────────────────────────────────────────────────────────
 
   private trimDedup(): void {
     const arr = [...this.dedup];

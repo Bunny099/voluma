@@ -9,6 +9,7 @@ export interface NormalizedEvent {
   amount?:     number;
   programId?:  string;
   confidence:  'HIGH' | 'MEDIUM' | 'LOW';  
+  rawLogs?:    string;
 }
 
 export interface IngestionProvider extends EventEmitter {

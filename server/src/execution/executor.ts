@@ -1,14 +1,27 @@
 import axios from 'axios';
-import { type MatchResult } from '../conditions/engine';
+import { type MatchResult }     from '../conditions/engine';
+import { type ExecutionAction } from '../conditions/types';
+import { type WalletManager }   from '../wallets/walletManager';
+import { type TradeExecutor }   from './tradeExecutor';
+import { type TradeGuard }      from './tradeGuard';
+import { conditionRepo }        from '../db/conditionRepo';
+import { pendingTxRepo }        from '../db/pendingTxRepo';
+import { processedEventRepo }  from '../db/processedEventRepo';
 
 type UserNotifyFn = (userId: string, payload: unknown) => void;
 
 export type ErrorType =
-  | 'timeout'
-  | 'network'
-  | 'bad_request'
-  | 'server_error'
-  | 'invalid_url';
+  | 'timeout' | 'network' | 'bad_request' | 'server_error'
+  | 'invalid_url' | 'trade_error' | 'no_wallet' | 'guard_rejected' | 'no_balance';
+
+export interface TradeResultPayload {
+  txHash?:    string;
+  inputMint:  string;
+  outputMint: string;
+  amountIn:   number;
+  outAmount?: number;
+  latencyMs:  number;
+}
 
 export interface ActionResult {
   type:            string;
@@ -18,13 +31,10 @@ export interface ActionResult {
   error?:          string;
   errorType?:      ErrorType;
   responseStatus?: number;
+  tradeResult?:    TradeResultPayload;
 }
 
-export interface ExecutionSummary {
-  total:   number;
-  success: number;
-  failed:  number;
-}
+export interface ExecutionSummary { total: number; success: number; failed: number; }
 
 export interface ExecutionResult {
   conditionId: string;
@@ -39,31 +49,52 @@ function makeDeliveryId(match: MatchResult): string {
   return `${match.condition.id.slice(0, 8)}-${match.event.signature.slice(0, 8)}-${match.matchedAt}`;
 }
 
+function tradeErr(message: string, type: ErrorType = 'trade_error'): Error {
+  return Object.assign(new Error(message), { _errorType: type });
+}
+
+const LAMPORTS_PER_SOL = 1_000_000_000;
+
 export class ExecutionEngine {
-  constructor(private readonly notify: UserNotifyFn) {}
+  private readonly walletLocks = new Map<string, Promise<void>>();
+
+  constructor(
+    private readonly notify:        UserNotifyFn,
+    private readonly walletManager: WalletManager,
+    private readonly tradeExecutor: TradeExecutor,
+    private readonly tradeGuard:    TradeGuard,
+  ) {}
 
   async execute(matches: MatchResult[]): Promise<ExecutionResult[]> {
     return Promise.all(matches.map(m => this.executeMatch(m)));
   }
 
   private async executeMatch(match: MatchResult): Promise<ExecutionResult> {
-    const deliveryId = makeDeliveryId(match);
+    if (processedEventRepo.exists(match.condition.id, match.event.signature)) {
+      console.warn(`[Executor] Duplicate delivery skipped: ${match.condition.id}:${match.event.signature}`);
+      return {
+        conditionId: match.condition.id,
+        matchedAt:   match.matchedAt,
+        actions:     [],
+        summary:     { total: 0, success: 0, failed: 0 },
+      };
+    }
+    processedEventRepo.insert(match.condition.id, match.event.signature);
+
+    const deliveryId    = makeDeliveryId(match);
     const actionResults: ActionResult[] = [];
 
     for (const action of match.condition.actions) {
-      if (action.type !== 'NOTIFY') {
-        actionResults.push(
-          await this.dispatchWithRetry(match, action.type, action.webhookUrl, 3, deliveryId),
-        );
-      }
+      if (action.type === 'NOTIFY') continue;
+      const maxAttempts = action.type === 'TRADE' ? 1 : 3;
+      actionResults.push(await this.dispatchWithRetry(match, action, maxAttempts, deliveryId));
     }
 
     const hasNotify = match.condition.actions.some(a => a.type === 'NOTIFY');
     if (hasNotify) {
-      const notifyStart   = Date.now();
       const notifyResult: ActionResult = { type: 'NOTIFY', status: 'success', attempts: 1, durationMs: 0 };
-      const allForClient  = [...actionResults, notifyResult];
-
+      const allForClient = [...actionResults, notifyResult];
+      const t0 = Date.now();
       this.notify(match.condition.userId, {
         conditionId:   match.condition.id,
         conditionName: match.condition.name,
@@ -75,19 +106,9 @@ export class ExecutionEngine {
         amount:        match.event.amount,
         matchedAt:     match.matchedAt,
         explanation:   match.explanation,
-        execution: {
-          deliveryId,
-          actions: allForClient,
-          summary: buildSummary(allForClient),
-        },
+        execution:     { deliveryId, actions: allForClient, summary: buildSummary(allForClient) },
       });
-
-      actionResults.push({
-        type:       'NOTIFY',
-        status:     'success',
-        attempts:   1,
-        durationMs: Date.now() - notifyStart,
-      });
+      actionResults.push({ type: 'NOTIFY', status: 'success', attempts: 1, durationMs: Date.now() - t0 });
     }
 
     return {
@@ -98,98 +119,65 @@ export class ExecutionEngine {
     };
   }
 
-  // ── Retry wrapper ──────────────────────────────────────────────────────────────
-
   private async dispatchWithRetry(
     match:       MatchResult,
-    type:        string,
-    webhookUrl:  string | undefined,
+    action:      ExecutionAction,
     maxAttempts: number,
     deliveryId:  string,
   ): Promise<ActionResult> {
     const start = Date.now();
+    const type  = action.type;
 
     if (type === 'WEBHOOK') {
-      if (!webhookUrl) {
-        return { type, status: 'skipped', attempts: 0, durationMs: 0 };
-      }
-      if (!isValidWebhookUrl(webhookUrl)) {
-        console.warn(
-          `[Executor] INVALID_URL conditionId=${match.condition.id} url=${webhookUrl}`,
-        );
-        return {
-          type,
-          status:    'failed',
-          attempts:  0,
-          durationMs: 0,
-          error:     'Invalid webhook URL — must start with http:// or https://',
-          errorType: 'invalid_url',
-        };
-      }
+      if (!action.webhookUrl) return { type, status: 'skipped', attempts: 0, durationMs: 0 };
+      if (!isValidUrl(action.webhookUrl))
+        return { type, status: 'failed', attempts: 0, durationMs: 0, error: 'Invalid webhook URL', errorType: 'invalid_url' };
     }
 
-    let lastError:          string          = 'Unknown error';
-    let lastErrorType:      ErrorType       = 'network';
-    let lastResponseStatus: number | undefined;
+    let lastError:   string    = 'Unknown error';
+    let lastErrType: ErrorType = 'network';
+    let lastStatus:  number | undefined;
+    let tradeResult: TradeResultPayload | undefined;
     let attempts = 0;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       attempts = attempt;
       try {
-        await this.dispatch(match, type, webhookUrl, deliveryId, attempt);
-
-        console.info(
-          `[Executor] SUCCESS type=${type} conditionId=${match.condition.id}` +
-          ` sig=${match.event.signature.slice(0, 12)} deliveryId=${deliveryId}` +
-          ` attempts=${attempt} duration=${Date.now() - start}ms`,
-        );
-
-        return { type, status: 'success', attempts, durationMs: Date.now() - start };
+        const result = await this.dispatch(match, action, deliveryId, attempt);
+        tradeResult  = result.tradeResult;
+        console.info(`[Executor] SUCCESS type=${type} cond=${match.condition.id} attempt=${attempt} ${Date.now() - start}ms`);
+        return { type, status: 'success', attempts, durationMs: Date.now() - start, tradeResult };
       } catch (err) {
-        const cls      = classifyError(err);
-        lastError          = cls.message;
-        lastErrorType      = cls.errorType;
-        lastResponseStatus = cls.responseStatus;
-
-        const retryable = isRetryable(err);
-        console.warn(
-          `[Executor] ATTEMPT_FAILED type=${type} attempt=${attempt}/${maxAttempts}` +
-          ` errorType=${lastErrorType} retryable=${retryable}` +
-          ` conditionId=${match.condition.id} sig=${match.event.signature.slice(0, 12)}`,
-        );
-
-        if (!retryable || attempt === maxAttempts) break;
-        await sleep(500 * Math.pow(2, attempt - 1)); // 500ms, 1s, 2s
+        const cls   = classifyError(err);
+        lastError   = cls.message;
+        lastErrType = cls.errorType;
+        lastStatus  = cls.responseStatus;
+        const retry = isRetryable(err);
+        console.warn(`[Executor] FAIL type=${type} attempt=${attempt}/${maxAttempts} err=${lastErrType} retry=${retry} cond=${match.condition.id}`);
+        if (!retry || attempt === maxAttempts) break;
+        await sleep(500 * Math.pow(2, attempt - 1));
       }
     }
 
-    console.error(
-      `[Executor] FAILURE type=${type} conditionId=${match.condition.id}` +
-      ` sig=${match.event.signature.slice(0, 12)} deliveryId=${deliveryId}` +
-      ` errorType=${lastErrorType} error=${lastError}`,
-    );
-
+    console.error(`[Executor] PERMANENT_FAIL type=${type} cond=${match.condition.id} deliveryId=${deliveryId} err=${lastError}`);
     return {
       type,
       status:         'failed',
       attempts,
       durationMs:     Date.now() - start,
       error:          lastError,
-      errorType:      lastErrorType,
-      responseStatus: lastResponseStatus,
+      errorType:      lastErrType,
+      responseStatus: lastStatus,
     };
   }
 
-  // ── Core dispatch (throws on failure — retry wrapper catches) ────────────────
-
   private async dispatch(
     match:      MatchResult,
-    type:       string,
-    webhookUrl: string | undefined,
+    action:     ExecutionAction,
     deliveryId: string,
     attempt:    number,
-  ): Promise<void> {
-    const basePayload = {
+  ): Promise<{ tradeResult?: TradeResultPayload }> {
+    const base = {
       conditionId:   match.condition.id,
       conditionName: match.condition.name,
       conditionType: match.condition.type,
@@ -200,15 +188,12 @@ export class ExecutionEngine {
       amount:        match.event.amount,
       matchedAt:     match.matchedAt,
       explanation:   match.explanation,
-      deliveryId,
-      attempt,
-      timestamp: Date.now(),
+      deliveryId, attempt, timestamp: Date.now(),
     };
 
-    switch (type) {
+    switch (action.type) {
       case 'WEBHOOK':
-        if (!webhookUrl) return;
-        await axios.post(webhookUrl, basePayload, {
+        await axios.post(action.webhookUrl!, base, {
           timeout: 5_000,
           headers: {
             'Content-Type':             'application/json',
@@ -217,25 +202,156 @@ export class ExecutionEngine {
             'X-Voluma-Attempt':         String(attempt),
           },
         });
-        break;
+        return {};
 
       case 'LOG':
         console.log('[Trigger]', JSON.stringify({
           condition:   match.condition.name,
-          type:        match.condition.type,
           explanation: match.explanation.reason,
           signature:   match.event.signature,
-          deliveryId,
         }));
-        break;
+        return {};
+
+      case 'TRADE': {
+        const { tradeDirection, tradeTokenMint, tradeAmountSol, tradeSellPercent, tradeSlippageBps } = action;
+
+        if (!tradeDirection || !tradeTokenMint)
+          throw tradeErr('TRADE action missing tradeDirection or tradeTokenMint');
+
+        const keypair = this.walletManager.getKeypair(match.condition.userId);
+        if (!keypair) throw tradeErr('No trading wallet — create one in the Wallet tab', 'no_wallet');
+
+        const walletId  = keypair.publicKey.toBase58();
+        const prevLock  = this.walletLocks.get(walletId) ?? Promise.resolve();
+        let   execResult: { tradeResult?: TradeResultPayload } | null = null;
+
+        const nextLock = prevLock.then(async () => {
+          try {
+            const rateCheck = this.tradeGuard.checkRateLimit(match.condition.userId);
+            if (!rateCheck.allowed) throw tradeErr(rateCheck.reason!, 'guard_rejected');
+
+            const mintCheck = this.tradeGuard.validateMint(tradeTokenMint);
+            if (!mintCheck.allowed) throw tradeErr(mintCheck.reason!, 'trade_error');
+
+            const effectiveMax = match.condition.allowRepeatedExecution === false
+              ? 1
+              : match.condition.maxExecutions;
+            if (effectiveMax !== undefined) {
+              const count = conditionRepo.getExecutionCount(match.condition.id);
+              if (count >= effectiveMax)
+                throw tradeErr(`Execution limit reached (${count}/${effectiveMax})`, 'guard_rejected');
+            }
+
+            const tradeKey = `${match.condition.id}:${match.event.signature}`;
+            if (!this.walletManager.markTradeSubmitted(tradeKey))
+              throw tradeErr('Duplicate trade blocked');
+
+            let rawAmountIn: number;
+
+            if (tradeDirection === 'BUY') {
+              if (!tradeAmountSol || tradeAmountSol <= 0)
+                throw tradeErr('BUY requires tradeAmountSol > 0');
+
+              const balCheck = await this.tradeGuard.checkBalance(keypair.publicKey, tradeAmountSol);
+              if (!balCheck.allowed) throw tradeErr(balCheck.reason!, 'no_balance');
+
+              rawAmountIn = Math.floor(tradeAmountSol * LAMPORTS_PER_SOL);
+
+            } else {
+              const sellPct = (tradeSellPercent && tradeSellPercent > 0)
+                ? tradeSellPercent
+                : (tradeAmountSol && tradeAmountSol >= 1 && tradeAmountSol <= 100)
+                  ? tradeAmountSol
+                  : null;
+
+              if (!sellPct)
+                throw tradeErr('SELL requires tradeSellPercent (1–100)');
+
+              const tokenCheck = await this.tradeGuard.checkTokenBalance(
+                keypair.publicKey,
+                tradeTokenMint,
+                sellPct,
+              );
+
+              if (!tokenCheck.allowed) throw tradeErr(tokenCheck.reason!, 'no_balance');
+
+              rawAmountIn = Number(tokenCheck.rawSellAmount!);
+
+              console.info(
+                `[Executor] SELL ${sellPct}% of token ${tradeTokenMint.slice(0, 8)} ` +
+                `= ${rawAmountIn} raw units (decimals=${tokenCheck.decimals})`,
+              );
+            }
+
+            const result = await this.tradeExecutor.executeTrade(keypair, {
+              direction:   tradeDirection,
+              tokenMint:   tradeTokenMint,
+              rawAmountIn,
+              slippageBps: tradeSlippageBps ?? 100,
+            });
+
+            if (!result.success) throw tradeErr(result.error ?? 'Trade failed on Jupiter');
+
+            conditionRepo.incrementExecutionCount(match.condition.id);
+
+            if (result.pending) {
+              pendingTxRepo.insert(
+                result.txHash!,
+                match.condition.userId,
+                match.condition.id,
+                result.amountIn,
+                result.inputMint,
+                result.outputMint,
+              );
+              execResult = {
+                tradeResult: {
+                  txHash:    result.txHash,
+                  inputMint: result.inputMint,
+                  outputMint: result.outputMint,
+                  amountIn:  result.amountIn,
+                  outAmount: result.outAmount,
+                  latencyMs: result.latencyMs,
+                },
+              };
+            } else {
+              execResult = {
+                tradeResult: {
+                  txHash:    result.txHash,
+                  inputMint: result.inputMint,
+                  outputMint: result.outputMint,
+                  amountIn:  result.amountIn,
+                  outAmount: result.outAmount,
+                  latencyMs: result.latencyMs,
+                },
+              };
+            }
+          } catch (e) {
+            // Re-throw so the promise chain propagates the rejection
+            throw e;
+          }
+        }).catch(e => {
+          // Ensure the lock chain is never broken by an unhandled rejection
+          console.error('[Executor] Wallet lock error for', walletId, e);
+        });
+
+        this.walletLocks.set(walletId, nextLock);
+
+        await nextLock;
+
+        if (this.walletLocks.get(walletId) === nextLock) {
+          this.walletLocks.delete(walletId);
+        }
+
+        if (!execResult) throw tradeErr('Wallet lock assertion failed');
+        return execResult;
+      }
 
       default:
-        console.warn('[Executor] Unknown action type:', type);
+        console.warn('[Executor] Unknown action type:', action.type);
+        return {};
     }
   }
 }
-
-// ── Pure helpers ──────────────────────────────────────────────────────────────
 
 function buildSummary(actions: ActionResult[]): ExecutionSummary {
   return {
@@ -246,24 +362,23 @@ function buildSummary(actions: ActionResult[]): ExecutionSummary {
 }
 
 function isRetryable(err: unknown): boolean {
-  if (!axios.isAxiosError(err)) return true;  
-  if (!err.response)            return true;  
+  const t = (err as any)?._errorType as ErrorType | undefined;
+  if (t === 'trade_error' || t === 'no_wallet' || t === 'guard_rejected' || t === 'no_balance')
+    return false;
+  if (!axios.isAxiosError(err)) return true;
+  if (!err.response) return true;
   const s = err.response.status;
   return s === 429 || s >= 500;
 }
 
-function classifyError(err: unknown): {
-  errorType: ErrorType; message: string; responseStatus?: number;
-} {
+function classifyError(err: unknown): { errorType: ErrorType; message: string; responseStatus?: number } {
+  const custom = (err as any)?._errorType as ErrorType | undefined;
+  if (custom) return { errorType: custom, message: (err as Error).message };
   if (axios.isAxiosError(err)) {
-    if (
-      err.code === 'ECONNABORTED' ||
-      err.code === 'ETIMEDOUT'   ||
-      err.message.toLowerCase().includes('timeout')
-    ) return { errorType: 'timeout', message: 'Request timed out after 5s' };
-
-    if (!err.response) return { errorType: 'network', message: err.message || 'Network error' };
-
+    if (!err.response) {
+      const timeout = err.code === 'ECONNABORTED' || err.code === 'ETIMEDOUT' || err.message.includes('timeout');
+      return { errorType: timeout ? 'timeout' : 'network', message: err.message };
+    }
     const s = err.response.status;
     if (s >= 400 && s < 500) return { errorType: 'bad_request',  message: `HTTP ${s}`, responseStatus: s };
     if (s >= 500)            return { errorType: 'server_error', message: `HTTP ${s}`, responseStatus: s };
@@ -271,11 +386,7 @@ function classifyError(err: unknown): {
   return { errorType: 'network', message: String(err) };
 }
 
-function isValidWebhookUrl(url: string): boolean {
-  try {
-    const { protocol } = new URL(url);
-    return protocol === 'http:' || protocol === 'https:';
-  } catch {
-    return false;
-  }
+function isValidUrl(url: string): boolean {
+  try { const { protocol } = new URL(url); return protocol === 'http:' || protocol === 'https:'; }
+  catch { return false; }
 }

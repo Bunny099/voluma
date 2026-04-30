@@ -1,50 +1,153 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 
 interface Stats {
-  queueDepth: number;
+  queueDepth:       number;
+  queueInFlight:    number;
   activeConditions: number;
-  wsConnections: number;
-  uptimeSeconds: number;
+  wsConnections:    number;
+  uptimeSeconds:    number;
+  totalEvents:      number;
+  droppedEvents:    number;
+  dropRate:         number;
+  totalExecutions:  number;
+  failedExecutions: number;
+  tradeSuccessRate: number;
+}
+
+const BASE = () => process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
+
+function fmt(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+function uptime(s: number): string {
+  if (s < 60)   return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+}
+
+
+function AnimNum({ value, warn }: { value: string; warn?: boolean }) {
+  const [display, setDisplay] = useState(value);
+  const [flash,   setFlash]   = useState(false);
+  const prev = useRef(value);
+
+  useEffect(() => {
+    if (prev.current !== value) {
+      setFlash(true);
+      setDisplay(value);
+      prev.current = value;
+      const t = setTimeout(() => setFlash(false), 500);
+      return () => clearTimeout(t);
+    }
+  }, [value]);
+
+  return (
+    <span style={{
+      fontFamily: 'JetBrains Mono, monospace',
+      fontSize: '0.65rem',
+      fontWeight: 700,
+      letterSpacing: '0.04em',
+      color: flash ? '#d4ff00' : warn ? '#fbbf24' : '#5c6472',
+      transition: 'color 0.35s',
+    }}>
+      {display}
+    </span>
+  );
+}
+
+function MetricRow({ label, value, warn }: { label: string; value: string; warn?: boolean }) {
+  return (
+    <div style={{
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      padding: '5px 0',
+      borderBottom: '1px solid rgba(255,255,255,0.03)',
+    }}>
+      <span style={{
+        fontFamily: 'JetBrains Mono, monospace',
+        fontSize: '0.6rem',
+        color: '#2e3540',
+        letterSpacing: '0.04em',
+      }}>
+        {label}
+      </span>
+      <AnimNum value={value} warn={warn} />
+    </div>
+  );
 }
 
 export default function SystemStats() {
-  const [stats, setStats] = useState<Stats | null>(null);
+  const [stats,   setStats]   = useState<Stats | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const fetch_ = async () => {
+    const go = async () => {
       try {
-        const r = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/stats`);
-        setStats(await r.json());
+        const r = await fetch(`${BASE()}/stats`);
+        if (r.ok) setStats(await r.json());
       } catch {}
+      finally { setLoading(false); }
     };
-    fetch_();
-    const t = setInterval(fetch_, 5_000);
+    go();
+    const t = setInterval(go, 5_000);
     return () => clearInterval(t);
   }, []);
 
-  const rows = stats ? [
-    { label: 'Queue depth',   value: stats.queueDepth.toLocaleString() },
-    { label: 'Conditions',    value: stats.activeConditions.toLocaleString() },
-    { label: 'WS clients',    value: stats.wsConnections.toLocaleString() },
-    { label: 'Uptime',        value: `${Math.floor(stats.uptimeSeconds / 60)}m` },
-  ] : [];
+  if (loading) {
+    return (
+      <div style={{ padding:'4px 0' }}>
+        <p style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.58rem', color:'#2e3540', letterSpacing:'0.12em', textTransform:'uppercase' as const, marginBottom:10 }}>
+          METRICS
+        </p>
+        {[0,1,2,3,4].map(i => (
+          <div key={i} style={{
+            height:16, marginBottom:5, borderRadius:4,
+            background:'rgba(255,255,255,0.03)',
+            animation:`ss-pulse 1.5s ${i * 0.12}s ease-in-out infinite`,
+          }} />
+        ))}
+        <style>{`@keyframes ss-pulse{0%,100%{opacity:0.3}50%{opacity:0.6}}`}</style>
+      </div>
+    );
+  }
+
+  if (!stats) {
+    return (
+      <div style={{ padding:'4px 0' }}>
+        <p style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.6rem', color:'#1a2030' }}>Connecting…</p>
+      </div>
+    );
+  }
+
+  const successPct = stats.totalExecutions > 0 ? `${(stats.tradeSuccessRate * 100).toFixed(0)}%` : '—';
+  const dropPct    = stats.dropRate > 0 ? `${(stats.dropRate * 100).toFixed(1)}%` : '0%';
 
   return (
-    <div>
-      <p className="text-[10px] text-zinc-600 font-mono uppercase tracking-wider mb-3">
-        System
-      </p>
-      <div className="space-y-2">
-        {rows.map(r => (
-          <div key={r.label} className="flex justify-between items-center">
-            <span className="text-[11px] text-zinc-500">{r.label}</span>
-            <span className="text-[11px] font-mono text-zinc-300">{r.value}</span>
-          </div>
-        ))}
-        {!stats && (
-          <p className="text-[11px] text-zinc-700 font-mono">loading…</p>
+    <div style={{ padding:'4px 0' }}>
+      <p style={{
+        fontFamily: 'JetBrains Mono, monospace',
+        fontSize: '0.58rem',
+        color: '#2e3540',
+        letterSpacing: '0.12em',
+        textTransform: 'uppercase' as const,
+        marginBottom: 10,
+      }}>METRICS</p>
+
+      <div>
+        <MetricRow label="Queue"      value={`${stats.queueDepth}/${stats.queueInFlight}`} warn={stats.queueDepth > 1000} />
+        <MetricRow label="Automations" value={String(stats.activeConditions)} />
+        <MetricRow label="Clients"    value={String(stats.wsConnections)} />
+        <MetricRow label="Events"     value={fmt(stats.totalEvents)} />
+        <MetricRow label="Drop rate"  value={dropPct} warn={stats.dropRate > 0.01} />
+        {stats.totalExecutions > 0 && (
+          <MetricRow label="Trade rate" value={successPct} warn={stats.tradeSuccessRate < 0.8} />
         )}
+        <MetricRow label="Uptime"     value={uptime(stats.uptimeSeconds)} />
       </div>
     </div>
   );
