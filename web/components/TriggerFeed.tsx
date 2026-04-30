@@ -1,291 +1,349 @@
 'use client';
 import { type TriggerEvent, type ActionResult, type ExecutionSummary, type TradeResultPayload } from '@/hooks/useSocket';
 import { formatDistanceToNowStrict } from 'date-fns';
+import { useState } from 'react';
 
-// ── Importance ────────────────────────────────────────────────────────────────
+const SOL_MINT = 'So11111111111111111111111111111111111111112';
+function shorten(s: string, n = 10) { return `${s.slice(0, n)}…${s.slice(-4)}`; }
 
 type Importance = 'critical' | 'high' | 'normal';
 
-function getImportance(ev: TriggerEvent): Importance {
-  const sol  = ev.amount ? ev.amount / 1e9 : 0;
-  const conf = ev.explanation?.confidence;
+function importance(ev: TriggerEvent): Importance {
+  const sol      = ev.amount ? ev.amount / 1e9 : 0;
   const hasTrade = ev.execution?.actions.some(a => a.type === 'TRADE');
-  if (hasTrade)                                    return 'high'; // trades always highlighted
   if (ev.conditionType === 'LARGE_TRANSFER') return sol >= 1_000 ? 'critical' : 'high';
-  if (ev.conditionType === 'TOKEN_VOLUME')   return 'high';
-  if (conf === 'HIGH' && sol >= 100)         return 'high';
+  if (hasTrade || ev.conditionType === 'TOKEN_VOLUME') return 'high';
+  if (ev.explanation?.confidence === 'HIGH' && sol >= 100) return 'high';
   return 'normal';
 }
 
-const IMPORTANCE_BORDER: Record<Importance, string> = {
-  critical: 'border-l-4 border-l-red-500   bg-red-500/5',
-  high:     'border-l-4 border-l-amber-400 bg-amber-400/5',
-  normal:   'border-l-4 border-l-transparent',
+const COND_COLORS: Record<string, string> = {
+  WALLET_ACTIVITY: '#a78bfa',
+  SWAP_BURST:      '#fbbf24',
+  TOKEN_VOLUME:    '#22d3ee',
+  LARGE_TRANSFER:  '#f87171',
 };
 
-const IMPORTANCE_LABEL: Record<Importance, string | null> = {
-  critical: '🔴 CRITICAL',
-  high:     '🟡 HIGH',
-  normal:   null,
+const CONF_CFG: Record<string, { color: string; bg: string; border: string }> = {
+  HIGH:   { color:'#d4ff00', bg:'rgba(212,255,0,0.08)',   border:'rgba(212,255,0,0.2)'   },
+  MEDIUM: { color:'#fbbf24', bg:'rgba(251,191,36,0.08)',  border:'rgba(251,191,36,0.2)'  },
+  LOW:    { color:'#3d4452', bg:'rgba(61,68,82,0.08)',    border:'rgba(61,68,82,0.2)'    },
 };
 
-// ── Summary bar ───────────────────────────────────────────────────────────────
-
-function SummaryBar({ summary }: { summary: ExecutionSummary }) {
-  const allGood = summary.failed === 0;
-  return (
-    <div className={`flex items-center gap-2 px-2 py-1 rounded text-[10px] font-mono ${allGood ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
-      <span>{allGood ? '✓' : '✗'}</span>
-      <span>{summary.success}/{summary.total} action{summary.total !== 1 ? 's' : ''} succeeded</span>
-      {summary.failed > 0 && <span className="text-red-400">{summary.failed} failed</span>}
-    </div>
-  );
-}
-
-// ── Trade result row ──────────────────────────────────────────────────────────
-
-const SOL_MINT = 'So11111111111111111111111111111111111111112';
-
-function truncateMint(mint: string) { return `${mint.slice(0, 6)}…${mint.slice(-4)}`; }
-
-function TradeResultRow({ result, status, error }: {
-  result?: TradeResultPayload;
-  status:  ActionResult['status'];
-  error?:  string;
-}) {
+function TradeCard({ result, status, error }: { result?: TradeResultPayload; status: ActionResult['status']; error?: string }) {
   if (status === 'failed') {
     return (
-      <div className="flex items-center gap-2 bg-red-950/40 border border-red-900/40 rounded-lg px-3 py-2">
-        <span className="text-red-500 text-sm">✗</span>
+      <div style={{ display:'flex', alignItems:'flex-start', gap:10, padding:'10px 12px', borderRadius:9, background:'rgba(248,113,113,0.06)', border:'1px solid rgba(248,113,113,0.2)' }}>
+        <div style={{ width:20, height:20, borderRadius:'50%', flexShrink:0, background:'rgba(248,113,113,0.15)', display:'flex', alignItems:'center', justifyContent:'center' }}>
+          <span style={{ color:'#f87171', fontSize:10 }}>✕</span>
+        </div>
         <div>
-          <p className="text-[10px] font-semibold text-red-400">Trade failed</p>
-          {error && <p className="text-[10px] text-red-500/80 font-mono mt-0.5">{error}</p>}
+          <p style={{ fontSize:'0.78rem', fontWeight:600, color:'#f87171', marginBottom:2 }}>Trade failed</p>
+          {error && <p style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.68rem', color:'rgba(248,113,113,0.6)' }}>{error}</p>}
         </div>
       </div>
     );
   }
-
   if (!result) return null;
 
-  const isBuy      = result.inputMint  === SOL_MINT;
-  const tokenMint  = isBuy ? result.outputMint : result.inputMint;
-  const solIn      = (result.amountIn / 1e9).toFixed(4);
-  const direction  = isBuy ? 'BUY' : 'SELL';
-  const dirColor   = isBuy ? 'text-emerald-400' : 'text-red-400';
-  const dirBg      = isBuy ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-red-500/10 border-red-500/20';
+  const isBuy  = result.inputMint === SOL_MINT;
+  const token  = isBuy ? result.outputMint : result.inputMint;
+  const solAmt = (result.amountIn / 1e9).toFixed(4);
 
   return (
-    <div className={`rounded-lg border px-3 py-2 ${dirBg}`}>
-      <div className="flex items-center justify-between mb-1.5">
-        <div className="flex items-center gap-2">
-          <span className={`text-[11px] font-bold font-mono ${dirColor}`}>◎ {direction}</span>
-          <span className="text-[10px] text-zinc-400 font-mono">
-            {solIn} SOL {isBuy ? '→' : '←'} {truncateMint(tokenMint)}
+    <div style={{ padding:'10px 12px', borderRadius:9, background: isBuy ? 'rgba(212,255,0,0.05)' : 'rgba(248,113,113,0.05)', border: `1px solid ${isBuy ? 'rgba(212,255,0,0.2)' : 'rgba(248,113,113,0.2)'}` }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:5 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+          <span style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.72rem', fontWeight:700, color: isBuy ? '#d4ff00' : '#f87171' }}>
+            {isBuy ? '↑ BUY' : '↓ SELL'}
+          </span>
+          <span style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.68rem', color:'#8a939f' }}>
+            {solAmt} SOL {isBuy ? '→' : '←'} {shorten(token, 6)}
           </span>
         </div>
-        <span className="text-[10px] text-zinc-600 font-mono">{result.latencyMs}ms</span>
+        <span style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.62rem', color:'#3d4452' }}>{result.latencyMs}ms</span>
       </div>
       {result.txHash && (
-        <a
-          href={`https://solscan.io/tx/${result.txHash}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-[10px] font-mono text-zinc-600 hover:text-zinc-400 transition-colors"
-        >
-          TX: {result.txHash.slice(0, 16)}… ↗
+        <a href={`https://solscan.io/tx/${result.txHash}`} target="_blank" rel="noopener noreferrer"
+          style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.62rem', color:'#3d4452', textDecoration:'none', transition:'color 0.15s' }}
+          onMouseEnter={e => (e.currentTarget.style.color='#8a939f')}
+          onMouseLeave={e => (e.currentTarget.style.color='#3d4452')}>
+          {shorten(result.txHash, 16)} ↗
         </a>
       )}
     </div>
   );
 }
 
-// ── Action badge ──────────────────────────────────────────────────────────────
-
-const STATUS_PILL: Record<string, string> = {
-  success: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
-  failed:  'bg-red-500/10     text-red-400     border-red-500/20',
-  skipped: 'bg-zinc-500/10   text-zinc-500    border-zinc-500/20',
-};
-const STATUS_DOT: Record<string, string> = {
-  success: 'bg-emerald-500',
-  failed:  'bg-red-500',
-  skipped: 'bg-zinc-500',
-};
-
-function ActionBadge({ action }: { action: ActionResult }) {
-  if (action.type === 'TRADE') return null; // TradeResultRow renders TRADE separately
-  const pill = STATUS_PILL[action.status] ?? STATUS_PILL.skipped;
-  const dot  = STATUS_DOT[action.status]  ?? STATUS_DOT.skipped;
+function SummaryBar({ summary }: { summary: ExecutionSummary }) {
+  const ok = summary.failed === 0;
   return (
-    <span className={`inline-flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded border ${pill}`}
-      title={[action.attempts > 1 ? `${action.attempts} attempts` : null, action.durationMs ? `${action.durationMs}ms` : null].filter(Boolean).join(' · ') || undefined}>
-      <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${dot}`} />
-      {action.type}
-      {action.attempts > 1 && <span className="opacity-60">×{action.attempts}</span>}
+    <span style={{
+      display:'inline-flex', alignItems:'center', gap:6,
+      padding:'3px 9px', borderRadius:6,
+      background: ok ? 'rgba(212,255,0,0.08)' : 'rgba(248,113,113,0.08)',
+      border: `1px solid ${ok ? 'rgba(212,255,0,0.2)' : 'rgba(248,113,113,0.2)'}`,
+      fontFamily:'JetBrains Mono,monospace', fontSize:'0.62rem', fontWeight:700,
+      color: ok ? '#d4ff00' : '#f87171',
+    }}>
+      <span>{ok ? '✓' : '✗'}</span>
+      <span>{summary.success}/{summary.total} actions</span>
+      {summary.failed > 0 && <span>· {summary.failed} failed</span>}
     </span>
   );
 }
 
-// ── Failure detail row ────────────────────────────────────────────────────────
+function ActionBadge({ action }: { action: ActionResult }) {
+  if (action.type === 'TRADE') return null;
+  const s = {
+    success: { color:'#d4ff00', bg:'rgba(212,255,0,0.08)',   border:'rgba(212,255,0,0.2)'   },
+    failed:  { color:'#f87171', bg:'rgba(248,113,113,0.08)', border:'rgba(248,113,113,0.2)' },
+    skipped: { color:'#3d4452', bg:'rgba(61,68,82,0.08)',    border:'rgba(61,68,82,0.2)'    },
+  }[action.status] ?? { color:'#3d4452', bg:'rgba(61,68,82,0.08)', border:'rgba(61,68,82,0.2)' };
 
-function FailureDetail({ action }: { action: ActionResult }) {
-  if (action.type === 'TRADE') return null; // rendered in TradeResultRow
-  const label = action.errorType
-    ? ({ timeout: 'timed out', network: 'network error', bad_request: `bad request${action.responseStatus ? ` (${action.responseStatus})` : ''}`, server_error: `server error${action.responseStatus ? ` (${action.responseStatus})` : ''}`, invalid_url: 'invalid URL', trade_error: 'trade error', no_wallet: 'no trading wallet' })[action.errorType] ?? action.errorType
-    : action.error ?? 'unknown failure';
   return (
-    <div className="bg-red-950/40 border border-red-900/40 rounded px-2 py-1">
-      <span className="text-[10px] font-mono text-red-400">
-        {action.type} · {label}{action.attempts > 1 ? ` · after ${action.attempts} attempts` : ''}
-      </span>
+    <span title={`${action.attempts} attempt${action.attempts !== 1 ? 's' : ''} · ${action.durationMs}ms`} style={{
+      display:'inline-flex', alignItems:'center', gap:5,
+      padding:'2px 8px', borderRadius:5,
+      background:s.bg, color:s.color, border:`1px solid ${s.border}`,
+      fontFamily:'JetBrains Mono,monospace', fontSize:'0.6rem', fontWeight:700, letterSpacing:'0.06em',
+    }}>
+      <span style={{ width:4, height:4, borderRadius:'50%', background:s.color, flexShrink:0 }} />
+      {action.type}
+      {action.attempts > 1 && <span style={{ opacity:0.5 }}>×{action.attempts}</span>}
+    </span>
+  );
+}
+
+
+function ExecutionRow({ ev, idx, isNew }: { ev: TriggerEvent; idx: number; isNew: boolean }) {
+  const [expanded, setExpanded] = useState(isNew); // newest auto-opens
+  const imp       = importance(ev);
+  const impColor  = imp === 'critical' ? '#f87171' : imp === 'high' ? '#fbbf24' : null;
+  const actions   = ev.execution?.actions ?? [];
+  const summary   = ev.execution?.summary;
+  const tradAct   = actions.find(a => a.type === 'TRADE');
+  const nonTrade  = actions.filter(a => a.type !== 'TRADE');
+  const condColor = COND_COLORS[ev.conditionType] ?? '#8a939f';
+  const hasFailed = (ev.execution?.summary?.failed ?? 0) > 0;
+
+  return (
+    <div
+      className={idx === 0 ? 'tf-new' : ''}
+      style={{
+        borderBottom: '1px solid rgba(255,255,255,0.04)',
+        borderLeft: `2px solid ${impColor ?? condColor}50`,
+        background: imp === 'critical' ? 'rgba(248,113,113,0.02)' : imp === 'high' ? 'rgba(251,191,36,0.015)' : 'transparent',
+        transition: 'background 0.2s',
+      }}
+    >
+      
+      <div
+        onClick={() => setExpanded(e => !e)}
+        style={{ padding: '11px 16px', cursor: 'pointer', userSelect: 'none' }}
+        className="tf-row"
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        
+          <div style={{
+            width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
+            background: hasFailed ? '#f87171' : '#d4ff00',
+            boxShadow: hasFailed ? '0 0 6px rgba(248,113,113,0.5)' : '0 0 6px rgba(212,255,0,0.4)',
+          }} />
+
+          
+          <span style={{ fontSize: '0.82rem', fontWeight: 700, color: condColor, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {ev.conditionName}
+          </span>
+
+          {tradAct && (
+            <span style={{
+              fontFamily: 'JetBrains Mono, monospace', fontSize: '0.6rem', fontWeight: 700,
+              padding: '2px 7px', borderRadius: 5, flexShrink: 0,
+              background: tradAct.status === 'failed' ? 'rgba(248,113,113,0.08)' : 'rgba(212,255,0,0.08)',
+              color:      tradAct.status === 'failed' ? '#f87171' : '#d4ff00',
+              border:     `1px solid ${tradAct.status === 'failed' ? 'rgba(248,113,113,0.2)' : 'rgba(212,255,0,0.2)'}`,
+            }}>
+              {tradAct.status === 'failed' ? '✗ TRADE' : '✓ TRADE'}
+              {tradAct.tradeResult?.txHash ? ` · ${tradAct.tradeResult.txHash.slice(0, 6)}…` : ''}
+            </span>
+          )}
+
+        
+          {summary && (
+            <span style={{
+              fontFamily: 'JetBrains Mono, monospace', fontSize: '0.6rem', fontWeight: 700,
+              padding: '2px 7px', borderRadius: 5,
+              background: hasFailed ? 'rgba(248,113,113,0.08)' : 'rgba(212,255,0,0.08)',
+              color: hasFailed ? '#f87171' : '#d4ff00',
+              border: `1px solid ${hasFailed ? 'rgba(248,113,113,0.2)' : 'rgba(212,255,0,0.2)'}`,
+              flexShrink: 0,
+            }}>
+              {hasFailed ? `✗ ${summary.failed} failed` : `✓ ${summary.success} ok`}
+            </span>
+          )}
+
+          
+          <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.6rem', color: '#2e3540', flexShrink: 0, whiteSpace: 'nowrap' }}>
+            {formatDistanceToNowStrict(ev.matchedAt)} ago
+          </span>
+
+        
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{ flexShrink: 0, transition: 'transform 0.2s', transform: expanded ? 'rotate(180deg)' : 'none' }}>
+            <path d="M2 3.5L5 6.5L8 3.5" stroke="#3d4452" strokeWidth="1.4" strokeLinecap="round"/>
+          </svg>
+        </div>
+
+        
+        {!expanded && ev.explanation?.reason && (
+          <p style={{ fontSize: '0.72rem', color: '#3d4452', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingLeft: 17 }}>
+            {ev.explanation.reason}
+          </p>
+        )}
+      </div>
+
+      
+      {expanded && (
+        <div style={{ padding: '0 16px 14px', paddingLeft: 16 }}>
+        
+          {imp !== 'normal' && (
+            <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.58rem', fontWeight: 700, color: impColor ?? '#3d4452', letterSpacing: '0.1em', marginBottom: 8, opacity: 0.8 }}>
+              {imp === 'critical' ? '● CRITICAL' : '◉ HIGH PRIORITY'}
+            </div>
+          )}
+
+         
+          {ev.explanation?.reason && (
+            <p style={{ fontSize: '0.78rem', color: '#8a939f', lineHeight: 1.55, marginBottom: 8 }}>
+              {ev.explanation.reason}
+            </p>
+          )}
+
+         
+          {ev.explanation && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 8 }}>
+              {ev.explanation.matchedFields.map(f => (
+                <span key={f} style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.6rem', padding: '2px 7px', borderRadius: 5, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)', color: '#3d4452' }}>{f}</span>
+              ))}
+              {(() => {
+                const cs = CONF_CFG[ev.explanation.confidence];
+                return cs ? (
+                  <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.6rem', padding: '2px 7px', borderRadius: 5, background: cs.bg, color: cs.color, border: `1px solid ${cs.border}` }}>{ev.explanation.confidence}</span>
+                ) : null;
+              })()}
+            </div>
+          )}
+
+         
+          {ev.explanation?.details && Object.keys(ev.explanation.details).length > 0 && (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '3px 16px', marginBottom: 8 }}>
+              {Object.entries(ev.explanation.details).map(([k, v]) => (
+                <div key={k} style={{ display: 'flex', gap: 5, fontFamily: 'JetBrains Mono, monospace', fontSize: '0.62rem' }}>
+                  <span style={{ color: '#2e3540' }}>{k}:</span>
+                  <span style={{ color: '#5c6472', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{String(v)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          
+          {tradAct && <div style={{ marginBottom: 8 }}><TradeCard result={tradAct.tradeResult} status={tradAct.status} error={tradAct.error} /></div>}
+
+         
+          {(summary || nonTrade.length > 0) && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+              {summary && <SummaryBar summary={summary} />}
+              {nonTrade.map((a, i) => <ActionBadge key={`${a.type}-${i}`} action={a} />)}
+            </div>
+          )}
+
+          
+          {actions.filter(a => a.status === 'failed' && a.type !== 'TRADE').map((a, i) => (
+            <div key={i} style={{ padding: '5px 9px', borderRadius: 7, marginBottom: 5, background: 'rgba(248,113,113,0.06)', border: '1px solid rgba(248,113,113,0.15)', fontFamily: 'JetBrains Mono, monospace', fontSize: '0.62rem', color: '#f87171' }}>
+              {a.type} failed{a.errorType ? ` (${a.errorType})` : ''}{a.error ? `: ${a.error}` : ''}
+            </div>
+          ))}
+
+        
+          <a href={`https://solscan.io/tx/${ev.signature}`} target="_blank" rel="noopener noreferrer"
+            style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.6rem', color: '#2e3540', textDecoration: 'none', transition: 'color 0.15s' }}
+            onMouseEnter={e => (e.currentTarget.style.color='#5c6472')}
+            onMouseLeave={e => (e.currentTarget.style.color='#2e3540')}>
+            {shorten(ev.signature, 16)} ↗
+          </a>
+        </div>
+      )}
     </div>
   );
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-const TYPE_COLOR: Record<string, string> = {
-  WALLET_ACTIVITY: 'text-violet-400',
-  SWAP_BURST:      'text-amber-400',
-  TOKEN_VOLUME:    'text-sky-400',
-  LARGE_TRANSFER:  'text-red-400',
-};
-
-const CONFIDENCE_PILL: Record<string, string> = {
-  HIGH:   'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
-  MEDIUM: 'bg-amber-500/10   text-amber-400   border-amber-500/20',
-  LOW:    'bg-zinc-500/10    text-zinc-400    border-zinc-500/20',
-};
-
-function truncate(s: string, n = 10) { return `${s.slice(0, n)}…${s.slice(-4)}`; }
-
-// ── Component ─────────────────────────────────────────────────────────────────
 
 interface Props { events: TriggerEvent[]; onClear: () => void; }
 
 export default function TriggerFeed({ events, onClear }: Props) {
+
   if (!events.length) {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-3 text-zinc-600">
-        <span className="text-4xl">⚡</span>
-        <p className="text-sm font-mono">No triggers yet</p>
-        <p className="text-xs text-zinc-700">Conditions are watching Solana mainnet</p>
+      <div style={{ height:'100%', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:16, fontFamily:'DM Sans,sans-serif' }}>
+        <style>{`@keyframes tf-bolt { 0%,100%{opacity:0.25;transform:scale(1)} 50%{opacity:0.5;transform:scale(1.04)} }`}</style>
+        <div style={{ width:52, height:52, borderRadius:14, background:'rgba(255,255,255,0.02)', border:'1px solid rgba(255,255,255,0.06)', display:'flex', alignItems:'center', justifyContent:'center', animation:'tf-bolt 3s ease-in-out infinite' }}>
+          <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+            <path d="M12 2L6.5 11H10.5L9.5 20L16 9.5H12L12 2Z" stroke="#2e3540" strokeWidth="1.4" strokeLinejoin="round"/>
+          </svg>
+        </div>
+        <div style={{ textAlign:'center' }}>
+          <p style={{ fontFamily:'Bebas Neue,sans-serif', fontSize:'1rem', letterSpacing:'0.1em', color:'#2e3540', marginBottom:4 }}>NO EXECUTIONS YET</p>
+          <p style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.62rem', color:'#1a2030' }}>Automations watching Solana mainnet in real-time</p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="h-full flex flex-col">
-      <div className="flex items-center justify-between px-4 py-2 border-b border-zinc-800 shrink-0">
-        <span className="text-[10px] text-zinc-500 font-mono uppercase tracking-wider">
-          {events.length} trigger{events.length !== 1 ? 's' : ''}
-        </span>
-        <button onClick={onClear} className="text-[11px] text-zinc-600 hover:text-zinc-400 transition-colors">
-          Clear all
+    <div style={{ height:'100%', display:'flex', flexDirection:'column', fontFamily:'DM Sans,system-ui,sans-serif' }}>
+      <style>{`
+        @keyframes tf-slide { from{opacity:0;transform:translateY(-6px)} to{opacity:1;transform:none} }
+        .tf-new { animation: tf-slide 0.3s ease-out both; }
+        .tf-scroll::-webkit-scrollbar { width: 3px; }
+        .tf-scroll::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.07); border-radius:2px; }
+        .tf-row { transition: background 0.15s; }
+        .tf-row:hover { background: rgba(255,255,255,0.02); }
+      `}</style>
+
+    
+      <div style={{
+        flexShrink:0, display:'flex', alignItems:'center', justifyContent:'space-between',
+        padding:'10px 16px', background:'rgba(7,11,16,0.92)',
+        borderBottom:'1px solid rgba(255,255,255,0.07)',
+      }}>
+        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+          <svg width="12" height="14" viewBox="0 0 12 14" fill="#d4ff00" opacity="0.7">
+            <path d="M7 0L3.5 7H6L5 14L9.5 6.5H7L7 0Z"/>
+          </svg>
+          <span style={{ fontFamily:'Bebas Neue,sans-serif', fontSize:'0.9rem', letterSpacing:'0.08em', color:'#8a939f' }}>
+            {events.length} EXECUTION{events.length !== 1 ? 'S' : ''}
+          </span>
+          <span style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.62rem', color:'#2e3540' }}>
+            · click to expand
+          </span>
+        </div>
+        <button onClick={onClear} style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.62rem', color:'#2e3540', background:'none', border:'none', cursor:'pointer', padding:'4px 8px', borderRadius:6, transition:'all 0.15s', letterSpacing:'0.04em' }}
+          onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color='#8a939f'; (e.currentTarget as HTMLButtonElement).style.background='rgba(255,255,255,0.04)'; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color='#2e3540'; (e.currentTarget as HTMLButtonElement).style.background='none'; }}>
+          clear all
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
-        {events.map((ev) => {
-          const importance   = getImportance(ev);
-          const importLabel  = IMPORTANCE_LABEL[importance];
-          const actions      = ev.execution?.actions ?? [];
-          const summary      = ev.execution?.summary;
-          const tradeAction  = actions.find(a => a.type === 'TRADE');
-          const failedActions = actions.filter(a => a.status === 'failed');
-          const nonTradeActions = actions.filter(a => a.type !== 'TRADE');
-
-          return (
-            <div
-              key={`${ev.conditionId}-${ev.matchedAt}`}
-              className={`border-b border-zinc-900 px-4 py-3 transition-colors hover:bg-zinc-900/20 ${IMPORTANCE_BORDER[importance]}`}
-            >
-              {/* Importance */}
-              {importLabel && (
-                <div className="text-[10px] font-mono font-semibold tracking-wider opacity-60 mb-1">
-                  {importLabel}
-                </div>
-              )}
-
-              {/* Condition name + age */}
-              <div className="flex items-center justify-between mb-1.5">
-                <span className={`text-xs font-semibold ${TYPE_COLOR[ev.conditionType] ?? 'text-zinc-300'}`}>
-                  {ev.conditionName}
-                </span>
-                <span className="text-[10px] text-zinc-600 font-mono">
-                  {formatDistanceToNowStrict(ev.matchedAt)} ago
-                </span>
-              </div>
-
-              {/* Explanation */}
-              {ev.explanation?.reason && (
-                <p className="text-xs text-zinc-300 mb-2 leading-snug">{ev.explanation.reason}</p>
-              )}
-
-              {/* Matched fields + confidence */}
-              {ev.explanation && (
-                <div className="flex flex-wrap gap-1.5 mb-2">
-                  {ev.explanation.matchedFields.map(f => (
-                    <span key={f} className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400">{f}</span>
-                  ))}
-                  <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${CONFIDENCE_PILL[ev.explanation.confidence] ?? ''}`}>
-                    {ev.explanation.confidence}
-                  </span>
-                </div>
-              )}
-
-              {/* Details grid */}
-              {ev.explanation?.details && Object.keys(ev.explanation.details).length > 0 && (
-                <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 mb-2">
-                  {Object.entries(ev.explanation.details).map(([k, v]) => (
-                    <div key={k} className="flex gap-1 text-[10px] font-mono">
-                      <span className="text-zinc-600 shrink-0">{k}:</span>
-                      <span className="text-zinc-400 truncate">{String(v)}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Trade result — shown prominently above other action badges */}
-              {tradeAction && (
-                <div className="mb-2">
-                  <TradeResultRow
-                    result={tradeAction.tradeResult}
-                    status={tradeAction.status}
-                    error={tradeAction.error}
-                  />
-                </div>
-              )}
-
-              {/* Execution summary */}
-              {summary && (
-                <div className="mb-2"><SummaryBar summary={summary} /></div>
-              )}
-
-              {/* Non-trade action badges */}
-              {nonTradeActions.length > 0 && (
-                <div className="flex flex-wrap gap-1.5 mb-2">
-                  {nonTradeActions.map((a, i) => <ActionBadge key={`${a.type}-${i}`} action={a} />)}
-                </div>
-              )}
-
-              {/* Non-trade failure details */}
-              {failedActions.filter(a => a.type !== 'TRADE').length > 0 && (
-                <div className="space-y-1 mb-2">
-                  {failedActions.filter(a => a.type !== 'TRADE').map((a, i) => (
-                    <FailureDetail key={i} action={a} />
-                  ))}
-                </div>
-              )}
-
-              {/* Tx link */}
-              <a href={`https://solscan.io/tx/${ev.signature}`} target="_blank" rel="noopener noreferrer"
-                className="text-[10px] font-mono text-zinc-700 hover:text-zinc-500 transition-colors">
-                {truncate(ev.signature, 14)} ↗
-              </a>
-            </div>
-          );
-        })}
+   
+      <div className="tf-scroll" style={{ flex:1, overflowY:'auto' }}>
+        {events.map((ev, idx) => (
+          <ExecutionRow
+            key={`${ev.conditionId}-${ev.matchedAt}`}
+            ev={ev}
+            idx={idx}
+            isNew={idx === 0}
+          />
+        ))}
       </div>
     </div>
   );

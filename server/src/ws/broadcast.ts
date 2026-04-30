@@ -48,7 +48,7 @@ export class BroadcastServer {
 
   // ─── Public API ──────────────────────────────────────────────────────────
 
-  /** Send a message to all sockets belonging to one user. */
+ 
   sendToUser(userId: string, payload: unknown): void {
     const sockets = this.rooms.get(userId);
     if (!sockets?.size) return;
@@ -58,7 +58,7 @@ export class BroadcastServer {
     }
   }
 
-  /** Broadcast to every connected socket (live feed). */
+
   broadcast(payload: unknown): void {
     const msg = JSON.stringify(payload);
     for (const sockets of this.rooms.values()) {

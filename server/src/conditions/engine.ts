@@ -26,11 +26,18 @@ const CLEANUP_INTERVAL_MS = 2 * 60 * 1_000;
 const MAX_WINDOW_ENTRIES  = 10_000;
 const FIRE_CACHE_MAX      = 10_000;
 
+
+const DEBUG_MINT = process.env.DEBUG_MINT_MATCHING === 'true';
+
 export class ConditionEngine {
+  // ── Inverted indexes ────────────────────────────────────────────────────────
   private walletIdx      = new Map<string, Set<string>>();
   private tokenIdx       = new Map<string, Set<string>>();
   private globalBurst    = new Set<string>();
+  private swapTokenConds = new Set<string>();
   private conditions     = new Map<string, Condition>();
+
+  // ── State ───────────────────────────────────────────────────────────────────
   private cooldowns      = new Map<string, number>();
   private swapCounts     = new Map<string, number[]>();
   private volumes        = new Map<string, VolumeEntry[]>();
@@ -41,16 +48,23 @@ export class ConditionEngine {
     setInterval(() => this.cleanup(), CLEANUP_INTERVAL_MS).unref();
   }
 
-  // ── Index management ──────────────────────────────────────────────────────────
+  // ── Index management ─────────────────────────────────────────────────────────
 
   load(condition: Condition): void {
     this.conditions.set(condition.id, condition);
-    if (condition.wallet)    getOrCreate(this.walletIdx, condition.wallet).add(condition.id);
-    if (condition.tokenMint) getOrCreate(this.tokenIdx, condition.tokenMint).add(condition.id);
-    if (
-      (condition.type === 'SWAP_BURST' || condition.type === 'TOKEN_VOLUME') &&
-      !condition.tokenMint
-    ) this.globalBurst.add(condition.id);
+
+    if (condition.wallet) {
+      getOrCreate(this.walletIdx, condition.wallet).add(condition.id);
+    }
+    if (condition.type === 'SWAP_BURST' || condition.type === 'TOKEN_VOLUME') {
+      if (condition.tokenMint) {    
+        getOrCreate(this.tokenIdx, condition.tokenMint).add(condition.id);
+        this.swapTokenConds.add(condition.id);
+      } else {
+        this.globalBurst.add(condition.id);
+      }
+    }
+   
   }
 
   unload(conditionId: string): void {
@@ -60,17 +74,25 @@ export class ConditionEngine {
     cond.wallet    && this.walletIdx.get(cond.wallet)?.delete(conditionId);
     cond.tokenMint && this.tokenIdx.get(cond.tokenMint)?.delete(conditionId);
     this.globalBurst.delete(conditionId);
+    this.swapTokenConds.delete(conditionId); // ← must clean up
     this.cooldowns.delete(conditionId);
     this.aboveThreshold.delete(conditionId);
   }
 
-  // ── Evaluation ────────────────────────────────────────────────────────────────
+  // ── Evaluation ───────────────────────────────────────────────────────────────
 
   async evaluate(event: NormalizedEvent): Promise<MatchResult[]> {
     const candidates = new Set<string>();
+
+    // Standard index lookups
     if (event.wallet)    for (const id of this.walletIdx.get(event.wallet)   ?? []) candidates.add(id);
     if (event.tokenMint) for (const id of this.tokenIdx.get(event.tokenMint) ?? []) candidates.add(id);
     for (const id of this.globalBurst) candidates.add(id);
+
+    if (event.type === 'SWAP' && this.swapTokenConds.size > 0) {
+      for (const id of this.swapTokenConds) candidates.add(id);
+    }
+
     if (!candidates.size) return [];
 
     const results: MatchResult[] = [];
@@ -149,14 +171,17 @@ export class ConditionEngine {
 
   private evalSlidingCount(cond: Condition, event: NormalizedEvent): EvalResult {
     if (event.type !== 'SWAP') return { matched: false };
-    if (cond.tokenMint && event.tokenMint !== cond.tokenMint) return { matched: false };
 
+    if (cond.tokenMint) {
+      const matched = this.mintMatches(cond.tokenMint, event);
+      if (!matched) return { matched: false };
+    }
     const windowMs  = (cond.windowSeconds ?? 30) * 1_000;
     const key       = `swaps:${cond.tokenMint ?? 'all'}`;
     const now       = Date.now();
     const cutoff    = now - windowMs;
     const threshold = cond.minSwaps ?? 50;
-
+   
     const arr = (this.swapCounts.get(key) ?? []).filter(ts => ts >= cutoff);
     arr.push(now);
     if (arr.length > MAX_WINDOW_ENTRIES) arr.splice(0, arr.length - MAX_WINDOW_ENTRIES);
@@ -186,14 +211,18 @@ export class ConditionEngine {
 
   private evalSlidingVolume(cond: Condition, event: NormalizedEvent): EvalResult {
     if (!event.amount) return { matched: false };
-    if (cond.tokenMint && event.tokenMint !== cond.tokenMint) return { matched: false };
+
+    if (cond.tokenMint) {
+      const matched = this.mintMatches(cond.tokenMint, event);
+      if (!matched) return { matched: false };
+    }
 
     const windowMs  = (cond.windowSeconds ?? 60) * 1_000;
     const key       = `vol:${cond.tokenMint ?? 'all'}`;
     const now       = Date.now();
     const cutoff    = now - windowMs;
     const threshold = cond.minVolumeSol ?? 1_000;
-
+   
     const arr = (this.volumes.get(key) ?? []).filter(e => e.ts >= cutoff);
     arr.push({ ts: now, amount: event.amount! });
     if (arr.length > MAX_WINDOW_ENTRIES) arr.splice(0, arr.length - MAX_WINDOW_ENTRIES);
@@ -239,6 +268,25 @@ export class ConditionEngine {
     };
   }
 
+
+
+  private mintMatches(conditionMint: string, event: NormalizedEvent): boolean {
+    const exactMatch = !!event.tokenMint && event.tokenMint === conditionMint;
+    const logsMatch  = !exactMatch && !!event.rawLogs?.includes(conditionMint);
+    const matched = exactMatch || logsMatch;
+
+    if (DEBUG_MINT) {
+      console.log(
+        `[MatchDebug] conditionMint=${conditionMint} ` +
+        `eventMint=${event.tokenMint ?? 'null'} ` +
+        `exactMatch=${exactMatch} logsMatch=${logsMatch} ` +
+        `matched=${matched} sig=${event.signature.slice(0, 12)}`
+      );
+    }
+
+    return matched;
+  }
+
   // ── Cooldown ──────────────────────────────────────────────────────────────────
 
   private cooldownActive(id: string): boolean {
@@ -268,10 +316,7 @@ export class ConditionEngine {
     const now = Date.now();
 
     for (const [id, exp] of this.cooldowns) {
-      if (now >= exp) {
-        this.cooldowns.delete(id);
-        this.aboveThreshold.delete(id);
-      }
+      if (now >= exp) { this.cooldowns.delete(id); this.aboveThreshold.delete(id); }
     }
     for (const [k, arr] of this.swapCounts) {
       const f = arr.filter(ts => now - ts < 3_600_000);
