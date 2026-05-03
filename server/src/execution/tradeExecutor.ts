@@ -5,11 +5,16 @@ import {
   VersionedTransaction,
 } from '@solana/web3.js';
 
-const JUPITER_QUOTE      = 'https://quote-api.jup.ag/v6/quote';
-const JUPITER_SWAP       = 'https://quote-api.jup.ag/v6/swap';
+const JUPITER_QUOTE      = 'https://api.jup.ag/swap/v1/quote';
+const JUPITER_SWAP       = 'https://api.jup.ag/swap/v1/swap';
 const SOL_MINT           = 'So11111111111111111111111111111111111111112';
 const LAMPORTS           = 1_000_000_000;
 const CONFIRM_TIMEOUT_MS = 30_000;
+
+function getJupiterHeaders(): Record<string, string> {
+  const apiKey = process.env.JUPITER_API_KEY ?? '';
+  return apiKey ? { 'x-api-key': apiKey } : {};
+}
 
 export interface TradeParams {
   direction:   'BUY' | 'SELL';
@@ -50,6 +55,8 @@ export class TradeExecutor {
 
     try {
     
+      const jupiterHeaders = getJupiterHeaders();
+
       const { data: quoteResponse } = await axios.get(JUPITER_QUOTE, {
         params: {
           inputMint,
@@ -58,6 +65,7 @@ export class TradeExecutor {
           slippageBps: params.slippageBps,
           swapMode,
         },
+        headers: jupiterHeaders,
         timeout: 8_000,
       });
 
@@ -71,7 +79,13 @@ export class TradeExecutor {
         wrapAndUnwrapSol:          true,
         prioritizationFeeLamports: 'auto',
         dynamicComputeUnitLimit:   true,
-      }, { timeout: 10_000, headers: { 'Content-Type': 'application/json' } });
+      }, {
+        timeout: 10_000,
+        headers: {
+          'Content-Type': 'application/json',
+          ...jupiterHeaders,
+        },
+      });
 
   
       const tx = VersionedTransaction.deserialize(Buffer.from(swapTransaction, 'base64'));

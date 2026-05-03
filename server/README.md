@@ -432,6 +432,9 @@ ws://localhost:3001/ws?userId=<uuid>
 # Required
 WALLET_ENCRYPTION_KEY=your-secret-key-minimum-32-characters-long
 
+# Jupiter Api Key
+JUPITER_API_KEY=your-jupiter-api-key
+
 # Optional — defaults to public mainnet RPC
 SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
 RPC_WSS=wss://api.mainnet-beta.solana.com

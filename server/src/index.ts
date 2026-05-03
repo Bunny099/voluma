@@ -30,7 +30,10 @@ if (ENC_KEY.length < 32) {
   process.exit(1);
 }
 
-const JUPITER_TOKEN_LIST = 'https://token.jup.ag/strict';
+const JUPITER_API_KEY = process.env.JUPITER_API_KEY ?? '';
+const JUPITER_HEADERS = JUPITER_API_KEY ? { 'x-api-key': JUPITER_API_KEY } : {};
+const JUPITER_TOKEN_LIST = 'https://api.jup.ag/tokens/v2/tag';
+const JUPITER_QUOTE = 'https://api.jup.ag/swap/v1/quote';
 const symbolCache = new Map<string, string>([
   ['So11111111111111111111111111111111111111112',    'SOL'],
   ['EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', 'USDC'],
@@ -43,13 +46,18 @@ const symbolCache = new Map<string, string>([
 
 async function loadJupiterTokenList(): Promise<void> {
   try {
-    const { data } = await axios.get<{ address: string; symbol: string }[]>(
-      JUPITER_TOKEN_LIST, { timeout: 10_000 }
+    const { data } = await axios.get<{ id: string; symbol: string }[]>(
+      JUPITER_TOKEN_LIST,
+      {
+        params:  { query: 'verified' },
+        headers: JUPITER_HEADERS,
+        timeout: 10_000,
+      },
     );
     let loaded = 0;
     for (const t of data) {
-      if (t.address && t.symbol && !symbolCache.has(t.address)) {
-        symbolCache.set(t.address, t.symbol);
+      if (t.id && t.symbol && !symbolCache.has(t.id)) {
+        symbolCache.set(t.id, t.symbol);
         loaded++;
       }
     }
@@ -410,10 +418,6 @@ export async function bootstrap() {
       return reply.code(500).send({ error: err.message ?? 'Token withdrawal failed' });
     }
   });
-
-
-  const JUPITER_QUOTE = 'https://quote-api.jup.ag/v6/quote';
-
   app.get<{
     Querystring: { inputMint: string; outputMint: string; amount: string; slippageBps?: string };
   }>('/trade/quote', async (req, reply) => {
@@ -435,6 +439,7 @@ export async function bootstrap() {
           slippageBps: slippageBps ? parseInt(slippageBps, 10) : 100,
           swapMode:    'ExactIn',
         },
+        headers: JUPITER_HEADERS,
         timeout: 8_000,
       });
 
@@ -523,6 +528,7 @@ export async function bootstrap() {
     try {
       const { data: quoteData } = await axios.get(JUPITER_QUOTE, {
         params: { inputMint, outputMint, amount: rawAmountIn, slippageBps: slippageBps ?? 100, swapMode: 'ExactIn' },
+        headers: JUPITER_HEADERS,
         timeout: 8_000,
       });
       if (!Number(quoteData.outAmount ?? 0)) {
@@ -633,6 +639,7 @@ export async function bootstrap() {
         try {
           const { data } = await axios.get(JUPITER_QUOTE, {
             params: { inputMint, outputMint, amount: testAmount, slippageBps: 100, swapMode: 'ExactIn' },
+            headers: JUPITER_HEADERS,
             timeout: 6_000,
           });
           if (!Number(data.outAmount ?? 0)) {
