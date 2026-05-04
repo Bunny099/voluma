@@ -88,7 +88,6 @@ export function useSocket(userId: string) {
   const [triggers,      setTriggers]      = useState<TriggerEvent[]>([]);
   const [triggeredSigs, setTriggeredSigs] = useState<Map<string, string>>(new Map());
   const [pendingTxs,    setPendingTxs]    = useState<PendingTxInfo[]>([]);
-  // Fix 6: trade toast queue
   const [tradeToasts,   setTradeToasts]   = useState<TradeToast[]>([]);
 
   const wsRef          = useRef<WebSocket | null>(null);
@@ -107,7 +106,6 @@ export function useSocket(userId: string) {
   setTradeToastsRef.current  = setTradeToasts;
   setPendingTxsRef.current   = setPendingTxs;
 
-  // Callback ref wired by dashboard page to refresh the wallet
   const onTradeSuccessRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
