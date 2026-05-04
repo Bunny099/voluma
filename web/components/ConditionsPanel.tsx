@@ -4,17 +4,31 @@ import { useConditions }           from '@/hooks/useConditions';
 import ConditionList               from './ConditionList';
 import ConditionBuilder            from './ConditionBuilder';
 import { type ConditionWithStats } from '../conditions/types';
+import { useEffect, useRef }       from 'react';
 
-interface Props { userId: string; }
+interface Props {
+  userId: string;
+  latestTriggerKey: string | null;
+}
 
-export default function ConditionsPanel({ userId }: Props) {
+export default function ConditionsPanel({ userId, latestTriggerKey }: Props) {
   const { conditions, loading, error, refetch, deleteCondition, toggleCondition, addOptimistic } =
     useConditions(userId);
+  const lastTriggerKeyRef = useRef<string | null>(latestTriggerKey);
 
   function handleCreated(cond: ConditionWithStats) {
     addOptimistic(cond);
     setTimeout(refetch, 3_000);
   }
+
+  useEffect(() => {
+    if (!latestTriggerKey) return;
+    if (lastTriggerKeyRef.current === latestTriggerKey) return;
+
+    lastTriggerKeyRef.current = latestTriggerKey;
+    const timer = setTimeout(() => { refetch(); }, 150);
+    return () => clearTimeout(timer);
+  }, [latestTriggerKey, refetch]);
 
   return (
     <div style={{ height:'100%', overflowY:'auto', fontFamily:'DM Sans,system-ui,sans-serif' }}>

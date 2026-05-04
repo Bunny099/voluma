@@ -100,12 +100,7 @@ export function useSocket(userId: string) {
   const setTriggeredSigsRef = useRef(setTriggeredSigs);
   const setTradeToastsRef   = useRef(setTradeToasts);
   const setPendingTxsRef    = useRef(setPendingTxs);
-  setLiveEventsRef.current    = setLiveEvents;
-  setTriggersRef.current      = setTriggers;
-  setTriggeredSigsRef.current = setTriggeredSigs;
-  setTradeToastsRef.current  = setTradeToasts;
-  setPendingTxsRef.current   = setPendingTxs;
-
+ 
   const onTradeSuccessRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {

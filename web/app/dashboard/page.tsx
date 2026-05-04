@@ -129,7 +129,8 @@ export default function Dashboard() {
     tradeToasts, dismissToast, pendingTxs,
     _onTradeSuccessRef,
   } = useSocket(userId);
-  const [view, setView] = useState<View>('feed');
+   const [view, setView] = useState<View>('feed');
+   const latestTriggerKey = triggers[0] ? `${triggers[0].conditionId}:${triggers[0].matchedAt}` : null;
 
   useEffect(() => {
     if (!_onTradeSuccessRef) return;
@@ -337,7 +338,7 @@ export default function Dashboard() {
           <div key={view} className="vdb-view">
             {view === 'feed'       && <EventFeed events={liveEvents} triggeredSigs={triggeredSigs} />}
             {view === 'triggers'   && <TriggerFeed events={triggers} onClear={clearTriggers} />}
-            {view === 'conditions' && <ConditionsPanel userId={userId} />}
+            {view === 'conditions' && <ConditionsPanel userId={userId} latestTriggerKey={latestTriggerKey} />}
             {view === 'wallet'     && <WalletPanel userId={userId} pendingTxs={pendingTxs} />}
           </div>
 

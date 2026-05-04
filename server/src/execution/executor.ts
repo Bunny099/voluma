@@ -91,23 +91,30 @@ export class ExecutionEngine {
     }
 
     const hasNotify = match.condition.actions.some(a => a.type === 'NOTIFY');
+    const notifyResult: ActionResult = {
+      type: 'NOTIFY',
+      status: 'success',
+      attempts: 1,
+      durationMs: 0,
+    };
+    const clientActions = hasNotify ? [...actionResults, notifyResult] : actionResults;
+
+    const t0 = Date.now();
+    this.notify(match.condition.userId, {
+      conditionId:   match.condition.id,
+      conditionName: match.condition.name,
+      conditionType: match.condition.type,
+      signature:     match.event.signature,
+      eventType:     match.event.type,
+      wallet:        match.event.wallet,
+      tokenMint:     match.event.tokenMint,
+      amount:        match.event.amount,
+      matchedAt:     match.matchedAt,
+      explanation:   match.explanation,
+      execution:     { deliveryId, actions: clientActions, summary: buildSummary(clientActions) },
+    });
+
     if (hasNotify) {
-      const notifyResult: ActionResult = { type: 'NOTIFY', status: 'success', attempts: 1, durationMs: 0 };
-      const allForClient = [...actionResults, notifyResult];
-      const t0 = Date.now();
-      this.notify(match.condition.userId, {
-        conditionId:   match.condition.id,
-        conditionName: match.condition.name,
-        conditionType: match.condition.type,
-        signature:     match.event.signature,
-        eventType:     match.event.type,
-        wallet:        match.event.wallet,
-        tokenMint:     match.event.tokenMint,
-        amount:        match.event.amount,
-        matchedAt:     match.matchedAt,
-        explanation:   match.explanation,
-        execution:     { deliveryId, actions: allForClient, summary: buildSummary(allForClient) },
-      });
       actionResults.push({ type: 'NOTIFY', status: 'success', attempts: 1, durationMs: Date.now() - t0 });
     }
 
