@@ -101,7 +101,9 @@ Existing solutions either:
 
 ## Demo
 
-> 📹 **[Watch the Demo Video →](#)** *(link will be added before submission)*
+> 📹 **[Watch the Demo Video →](https://youtu.be/4jbm5CBOQ0A)*
+
+> 🎤 **[Watch the Pitch Video →](https://youtu.be/Pj3oKvSct10)**
 
 ### What the demo shows:
 1. Real Solana mainnet transactions streaming live into the dashboard
