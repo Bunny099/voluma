@@ -115,11 +115,13 @@ Existing solutions either:
 
 ## Screenshots
 
-*(Add screenshots before submission)*
+| Live Feed | Automations |
+|-----------|-------------|
+| ![Live Feed](assets/screenshot-live-feed.png) | ![Automations](assets/screenshot-automation.png) |
 
-| Live Feed | Automation Builder | Executions | Wallet |
-|-----------|-------------------|------------|--------|
-| Real-time Solana tx stream | Node pipeline UI | Triggered conditions | Auto-trade wallet |
+| Executions | Wallet |
+|------------|--------|
+| ![Executions](assets/screenshot-execution.png) | ![Wallet](assets/screenshot-wallet.png) |
 
 ---
 
