@@ -1,6 +1,6 @@
 # Voluma Web
 
-> Real-time automation dashboard for Solana on-chain trading
+> Real-time automation dashboard for Solana — trading, webhooks, notifications, and on-chain execution in one interface
 
 The Voluma frontend is a Next.js 14 application that connects to the Voluma server via REST API and WebSocket. It provides a live view of Solana mainnet activity, a visual pipeline builder for creating automations, an execution history feed, and a wallet manager with server-side AES-256 encrypted key storage.
 

@@ -112,6 +112,8 @@ Connects to Solana mainnet via WebSocket and subscribes to log notifications for
   - **Confidence scoring**: HIGH (exact wallet match) / MEDIUM (prefix or amount present) / LOW (neither)
 - Emits `transaction` events consumed by the EventQueue
 
+> **Note on parsing**: Wallet and mint detection use heuristic approaches — exact pubkey matching and frequency-based inference from log data. This is intentional and pragmatic. The Yellowstone upgrade path replaces heuristics with fully decoded canonical transaction data.
+
 **Key design decision**: Frequency-based mint extraction compensates for DEX programs that don't emit explicit mint labels. The token mint appears in multiple CPI invocation logs, making it the most repeated non-program pubkey — a reliable heuristic.
 
 **Upgrade path**: `yellowstone-provider.ts` is a drop-in replacement stub. Helius Yellowstone gRPC delivers fully decoded transaction data at <100ms latency. The rest of the system requires zero changes because both implement `IngestionProvider`.
@@ -513,7 +515,7 @@ Widely audited, deterministic (important for key storage), and sufficient for th
 
 | Metric | Value | Notes |
 |--------|-------|-------|
-| Event processing latency | <50ms | From WebSocket message to condition evaluation |
+| Event processing latency | <50ms | From WebSocket message to condition evaluation — applies to transactions from monitored DEX programs and System Program |
 | Trade execution latency | 400–800ms | Jupiter quote + tx build + send + confirm |
 | Queue capacity | 5,000 events | Events dropped beyond this (drop rate tracked) |
 | Concurrent handlers | 20 | Tune via `EventQueue` constructor |

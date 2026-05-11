@@ -24,6 +24,21 @@ It bridges the gap between on-chain data and execution — turning raw blockchai
 
 ---
 
+## 🔁 Beyond Trading
+
+Voluma's core is a general automation engine — not a trading bot.
+
+The condition evaluation pipeline, action dispatch system, and real-time feedback loop are designed to work with any on-chain signal and any action type. Trading is the sharpest initial use case because it proves the full loop end-to-end with verifiable on-chain results.
+
+The same infrastructure naturally extends to:
+- **Agent execution rails** — reliable triggers and stateful feedback for AI agents operating on Solana
+- **DAO operations** — treasury monitoring, governance signal detection, automatic alerts
+- **Protocol automation** — launch detection, liquidity events, anomaly response
+- **Developer workflows** — webhook-driven pipelines triggered directly by on-chain conditions
+
+Voluma sits at the seam between on-chain state changes and executable outcomes. Trading is where it starts. Execution middleware is where it goes.
+
+---
 
 ## ⚡ Why this matters
 
@@ -101,7 +116,7 @@ Existing solutions either:
 
 ## Demo
 
-> 📹 **[Watch the Demo Video →](https://youtu.be/4jbm5CBOQ0A)*
+> 📹 **[Watch the Demo Video →](https://youtu.be/4jbm5CBOQ0A)**
 
 > 🎤 **[Watch the Pitch Video →](https://youtu.be/Pj3oKvSct10)**
 
@@ -149,7 +164,7 @@ Solana Mainnet (WebSocket)
 
 This entire pipeline is live and running on Solana mainnet — from ingestion to execution.
 
-**Every transaction on Solana is evaluated in under 50ms.** No polling. No RPC spam. A single persistent WebSocket connection handles the entire ingestion pipeline.
+**Every transaction from monitored DEX programs and the System Program is evaluated in under 50ms.** No polling. No RPC spam. A single persistent WebSocket connection handles the entire ingestion pipeline.
 
 ---
 
@@ -303,7 +318,7 @@ The architecture was designed for this migration from day one.
 | Dialect | Solana | ✓ | ✗ | ✓ | Partial |
 | Generic alert bots | Various | Partial | ✗ | ✓ | Varies |
 
-**Voluma is the only real-time, condition-based automation engine with encrypted wallet storage and native trade execution on Solana.**
+**Voluma combines real-time condition evaluation, encrypted wallet management, and native Jupiter execution in one unified system — this combination does not currently exist as a packaged product on Solana.**
 
 ---
 
@@ -369,6 +384,8 @@ Built for the Colosseum Frontier Hackathon (April–May 2026). Voluma represents
 The goal beyond the hackathon is the Colosseum Accelerator program. Voluma solves a real problem with real infrastructure, and the zero-cost build proves the model works before a dollar of infrastructure spend.
 
 Voluma demonstrates that real-time, automated execution on on-chain signals is not theoretical — it is already operational.
+
+The automated trade in the demo video is verifiable on Solscan. Real mainnet. Real transaction. Real token received.
 
 ---
 
