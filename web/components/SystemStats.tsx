@@ -145,7 +145,7 @@ export default function SystemStats() {
         <MetricRow label="Events"     value={fmt(stats.totalEvents)} />
         <MetricRow label="Drop rate"  value={dropPct} warn={stats.dropRate > 0.01} />
         {stats.totalExecutions > 0 && (
-          <MetricRow label="Trade rate" value={successPct} warn={stats.tradeSuccessRate < 0.8} />
+          <MetricRow label="Action rate" value={successPct} warn={stats.tradeSuccessRate < 0.8} />
         )}
         <MetricRow label="Uptime"     value={uptime(stats.uptimeSeconds)} />
       </div>

@@ -292,7 +292,7 @@ export async function bootstrap() {
   // ── Ingestion ─────────────────────────────────────────────────────────────
 
   const provider = new PublicRPCProvider();
-
+  for (const wallet of watchedWallets) provider.watchWallet(wallet);
   provider.on('transaction', (event: NormalizedEvent) => {
     totalEvents++;
     setImmediate(() => {

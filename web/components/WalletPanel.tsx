@@ -343,7 +343,7 @@ export default function WalletPanel({ userId, pendingTxs = [] }: { userId: strin
             </div>
             <p style={{ fontFamily: 'Bebas Neue, sans-serif', fontSize: '1.3rem', letterSpacing: '0.08em', color: '#e8ecf0', marginBottom: 8 }}>No Trading Wallet</p>
             <p style={{ fontSize: '0.78rem', color: '#5c6472', lineHeight: 1.6, marginBottom: 22 }}>
-              Create a dedicated wallet to fund and automate trades on Solana.
+              Create a dedicated wallet with AES-256 encrypted key storage. Keys are decrypted only during execution.
             </p>
             <button
               onClick={createWallet}
@@ -377,13 +377,13 @@ export default function WalletPanel({ userId, pendingTxs = [] }: { userId: strin
                   {wallet.balanceSol !== null && (
                     <span style={{
                       display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 7,
-                      background: wallet.balanceSol >= 0.05 ? 'rgba(212,255,0,0.07)' : 'rgba(251,191,36,0.07)',
-                      border: `1px solid ${wallet.balanceSol >= 0.05 ? 'rgba(212,255,0,0.2)' : 'rgba(251,191,36,0.2)'}`,
+                      background: wallet.balanceSol >= 0.005 ? 'rgba(212,255,0,0.07)' : 'rgba(251,191,36,0.07)',
+                      border: `1px solid ${wallet.balanceSol >= 0.005 ? 'rgba(212,255,0,0.2)' : 'rgba(251,191,36,0.2)'}`,
                       fontFamily: 'JetBrains Mono, monospace', fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.08em',
-                      color: wallet.balanceSol >= 0.05 ? '#d4ff00' : '#fbbf24',
+                      color: wallet.balanceSol >= 0.005 ? '#d4ff00' : '#fbbf24',
                     }}>
                       <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'currentColor' }} />
-                      {wallet.balanceSol >= 0.05 ? 'READY' : 'LOW'}
+                      {wallet.balanceSol >= 0.005 ? 'READY' : 'LOW'}
                     </span>
                   )}
                 </div>

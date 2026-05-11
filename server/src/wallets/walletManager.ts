@@ -196,7 +196,7 @@ export class WalletManager {
       .filter((t): t is TokenBalance => t !== null && t.balance > 0);
 
     // Attach any pending/confirmed txs associated with this wallet's public key
-    const allPending = pendingTxRepo.getByWallet(record.publicKey);
+    const allPending = pendingTxRepo.getByWallet(record.userId);
     const pendingTxs: PendingTxInfo[] = allPending.map((tx) => ({
       txHash: tx.txHash,
       status: tx.status,

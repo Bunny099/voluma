@@ -359,6 +359,16 @@ export default function ConditionBuilder({ userId, onCreated }: Props) {
   const handleSubmit = async () => {
     setError(null);
     if (!form.name?.trim()) { setError('Give this automation a name'); setActivePanel(null); return; }
+    if (form.type === 'WALLET_ACTIVITY' && !form.wallet?.trim()) {
+    setError('A wallet address is required for Wallet Activity conditions');
+    setActivePanel('trigger');
+    return;
+    }
+    if (execMode === 'limited' && !form.maxExecutions) {
+    setError('Enter a max execution count for Limited mode');
+    setActivePanel('action');
+    return;
+  }
     if (isTradeAction) {
       if (walletMissing) { setError('Create a trading wallet first — go to the Wallet tab.'); return; }
       if (!currentAction?.tradeTokenMint)             { setError('Select or enter a token mint'); setActivePanel('action'); return; }
@@ -408,7 +418,7 @@ export default function ConditionBuilder({ userId, onCreated }: Props) {
 
   const tPreview = triggerPreview(form);
   const aPreview = actionPreview(currentAction);
-  const canSubmit = !saving && !!form.name?.trim() && !mintError && !walletMissing;
+  const canSubmit = !saving && !!form.name?.trim() && !mintError && !walletMissing && (execMode !== 'limited' || !!form.maxExecutions);
   const triggerIsConfigured = tPreview.length > 0 || !!form.type;
   const actionIsConfigured = aPreview.length > 0 || !!currentAction?.type;
 
@@ -484,7 +494,7 @@ export default function ConditionBuilder({ userId, onCreated }: Props) {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <div>
               <label style={LBL}>Wallet address</label>
-              <input className="cb2-input" placeholder="7xKX...abc (leave blank for any)" value={form.wallet ?? ''} onChange={e => set('wallet', e.target.value || undefined)} style={INP_MONO} />
+              <input className="cb2-input" placeholder="7xKX...abc (required)" value={form.wallet ?? ''} onChange={e => set('wallet', e.target.value || undefined)} style={INP_MONO} />
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
               <div>
@@ -492,7 +502,7 @@ export default function ConditionBuilder({ userId, onCreated }: Props) {
                 <Select value={form.transactionType ?? 'ANY'} onValueChange={v => set('transactionType', v as Condition['transactionType'])}>
                   <SelectTrigger className="cb2-select-trigger"><SelectValue /></SelectTrigger>
                   <SelectContent style={{ background: '#0d1520', border: '1px solid rgba(255,255,255,0.1)' }}>
-                    {(['ANY','BUY','SELL','TRANSFER'] as const).map(t => (
+                    {(['ANY','TRANSFER'] as const).map(t => (
                       <SelectItem key={t} value={t} style={{ color: '#c4ccd6', fontSize: '0.8rem' }}>{t}</SelectItem>
                     ))}
                   </SelectContent>

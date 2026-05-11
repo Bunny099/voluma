@@ -69,7 +69,7 @@ function TerminalFeed() {
           <span style={{ background: '#ffbd2e' }} />
           <span style={{ background: '#28c840' }} />
         </div>
-        <span className="lp-term-name">voluma / live-mainnet</span>
+        <span className="lp-term-name">voluma / pipeline-preview</span>
         <div className="lp-term-badge">
           <span className="lp-term-pulse" />
           LIVE
@@ -104,7 +104,7 @@ function TerminalFeed() {
 
      
       <div className="lp-term-foot">
-        <span>Simulated feed · Live on Solana mainnet</span>
+        <span>Illustrative pipeline preview · Live data in dashboard</span>
         <span className="lp-term-foot-r">~4.2M daily tx on Solana</span>
       </div>
     </div>
