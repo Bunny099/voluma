@@ -110,7 +110,7 @@ export default function EventFeed({ events, triggeredSigs }: Props) {
         </div>
 
        
-        <div style={{ display:'flex', alignItems:'center', gap:8, padding:'7px 16px', flexWrap:'wrap', gap:'6px' } as React.CSSProperties}>
+        <div style={{ display:'flex', alignItems:'center', padding:'7px 16px', flexWrap:'wrap', gap:'6px' } as React.CSSProperties}>
         
           <div style={{
             display:'flex', gap:2,

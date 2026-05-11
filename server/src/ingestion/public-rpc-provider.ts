@@ -195,7 +195,7 @@ export class PublicRPCProvider extends EventEmitter implements IngestionProvider
   private extractTokenMint(logs: string[], joined: string): string | undefined {
     const mintPatternMatch = joined.match(MINT_LOG_RE);
     if (mintPatternMatch) {
-      const candidate = mintPatternMatch[1];
+      const candidate = mintPatternMatch[1]!;
       if (!KNOWN_PROGRAMS.has(candidate)) return candidate;
     }
 

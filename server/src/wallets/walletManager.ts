@@ -292,7 +292,7 @@ export class WalletManager {
     const uiAmountStr = uiAmount.toFixed(decimals);
     const [intPart, fracPart = ""] = uiAmountStr.split(".");
     const fracPadded = fracPart.padEnd(decimals, "0").slice(0, decimals);
-    const rawAmount = BigInt(intPart) * multiplier + BigInt(fracPadded);
+    const rawAmount = BigInt(intPart!) * multiplier + BigInt(fracPadded);
 
     if (rawAmount <= 0n)
       throw new Error("Transfer amount must be greater than zero");
