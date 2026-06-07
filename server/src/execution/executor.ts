@@ -1,12 +1,14 @@
 import axios from 'axios';
-import { type MatchResult }     from '../conditions/engine';
-import { type ExecutionAction } from '../conditions/types';
-import { type WalletManager }   from '../wallets/walletManager';
-import { type TradeExecutor }   from './tradeExecutor';
-import { type TradeGuard }      from './tradeGuard';
-import { conditionRepo }        from '../db/conditionRepo';
-import { pendingTxRepo }        from '../db/pendingTxRepo';
-import { processedEventRepo }  from '../db/processedEventRepo';
+import { type MatchResult }      from '../conditions/engine';
+import { type ExecutionAction }  from '../conditions/types';
+import { type WalletManager }    from '../wallets/walletManager';
+import { type TradeExecutor }    from './tradeExecutor';
+import { type TradeGuard }       from './tradeGuard';
+import { conditionRepo }         from '../db/conditionRepo';
+import { pendingTxRepo }         from '../db/pendingTxRepo';
+import { processedEventRepo }    from '../db/processedEventRepo';
+import { tradeExecutionRepo }    from '../db/tradeExecutionRepo';
+import { walletActivityRepo }    from '../db/walletActivityRepo';
 
 type UserNotifyFn = (userId: string, payload: unknown) => void;
 
@@ -15,17 +17,24 @@ export type ErrorType =
   | 'invalid_url' | 'trade_error' | 'no_wallet' | 'guard_rejected' | 'no_balance';
 
 export interface TradeResultPayload {
-  txHash?:    string;
-  inputMint:  string;
+  status: 'PENDING' | 'CONFIRMED' | 'FAILED';
+  txHash?: string;
+  inputMint: string;
   outputMint: string;
-  amountIn:   number;
+  amountIn: number;
   outAmount?: number;
-  latencyMs:  number;
+  quoteOutAmount?: number;
+  priceImpactPct?: number | null;
+  slippageBps?: number;
+  routeSummary?: unknown;
+  providerLabel?: string;
+  failureReason?: string;
+  latencyMs: number;
 }
 
 export interface ActionResult {
   type:            string;
-  status:          'success' | 'failed' | 'skipped';
+  status:          'success' | 'pending' | 'failed' | 'skipped';
   attempts:        number;
   durationMs:      number;
   error?:          string;
@@ -34,7 +43,12 @@ export interface ActionResult {
   tradeResult?:    TradeResultPayload;
 }
 
-export interface ExecutionSummary { total: number; success: number; failed: number; }
+export interface ExecutionSummary {
+  total: number;
+  success: number;
+  pending: number;
+  failed: number;
+}
 
 export interface ExecutionResult {
   conditionId: string;
@@ -70,16 +84,22 @@ export class ExecutionEngine {
   }
 
   private async executeMatch(match: MatchResult): Promise<ExecutionResult> {
-    if (processedEventRepo.exists(match.condition.id, match.event.signature)) {
-      console.warn(`[Executor] Duplicate delivery skipped: ${match.condition.id}:${match.event.signature}`);
+
+    const isNew = await processedEventRepo.insertIfAbsent(
+      match.condition.id,
+      match.event.signature,
+    );
+    if (!isNew) {
+      console.warn(
+        `[Executor] Duplicate delivery skipped: ${match.condition.id}:${match.event.signature}`,
+      );
       return {
         conditionId: match.condition.id,
         matchedAt:   match.matchedAt,
         actions:     [],
-        summary:     { total: 0, success: 0, failed: 0 },
+        summary:     { total: 0, success: 0, pending: 0, failed: 0 },
       };
     }
-    processedEventRepo.insert(match.condition.id, match.event.signature);
 
     const deliveryId    = makeDeliveryId(match);
     const actionResults: ActionResult[] = [];
@@ -90,12 +110,9 @@ export class ExecutionEngine {
       actionResults.push(await this.dispatchWithRetry(match, action, maxAttempts, deliveryId));
     }
 
-    const hasNotify = match.condition.actions.some(a => a.type === 'NOTIFY');
+    const hasNotify    = match.condition.actions.some(a => a.type === 'NOTIFY');
     const notifyResult: ActionResult = {
-      type: 'NOTIFY',
-      status: 'success',
-      attempts: 1,
-      durationMs: 0,
+      type: 'NOTIFY', status: 'success', attempts: 1, durationMs: 0,
     };
     const clientActions = hasNotify ? [...actionResults, notifyResult] : actionResults;
 
@@ -106,9 +123,13 @@ export class ExecutionEngine {
       conditionType: match.condition.type,
       signature:     match.event.signature,
       eventType:     match.event.type,
+      direction:     match.event.direction,
       wallet:        match.event.wallet,
       tokenMint:     match.event.tokenMint,
+      tokenSymbol:   match.event.tokenSymbol,
       amount:        match.event.amount,
+      amountUi:      match.event.amountUi,
+      amountSol:     match.event.amountSol,
       matchedAt:     match.matchedAt,
       explanation:   match.explanation,
       execution:     { deliveryId, actions: clientActions, summary: buildSummary(clientActions) },
@@ -152,8 +173,9 @@ export class ExecutionEngine {
       try {
         const result = await this.dispatch(match, action, deliveryId, attempt);
         tradeResult  = result.tradeResult;
-        console.info(`[Executor] SUCCESS type=${type} cond=${match.condition.id} attempt=${attempt} ${Date.now() - start}ms`);
-        return { type, status: 'success', attempts, durationMs: Date.now() - start, tradeResult };
+        const actionStatus = tradeResult?.status === 'PENDING' ? 'pending' : 'success';
+        console.info(`[Executor] SUCCESS type=${type} cond=${match.condition.id} attempt=${attempt} ${Date.now() - start}ms status=${actionStatus}`);
+        return { type, status: actionStatus, attempts, durationMs: Date.now() - start, tradeResult };
       } catch (err) {
         const cls   = classifyError(err);
         lastError   = cls.message;
@@ -190,9 +212,13 @@ export class ExecutionEngine {
       conditionType: match.condition.type,
       signature:     match.event.signature,
       eventType:     match.event.type,
+      direction:     match.event.direction,
       wallet:        match.event.wallet,
       tokenMint:     match.event.tokenMint,
+      tokenSymbol:   match.event.tokenSymbol,
       amount:        match.event.amount,
+      amountUi:      match.event.amountUi,
+      amountSol:     match.event.amountSol,
       matchedAt:     match.matchedAt,
       explanation:   match.explanation,
       deliveryId, attempt, timestamp: Date.now(),
@@ -228,9 +254,11 @@ export class ExecutionEngine {
         const keypair = this.walletManager.getKeypair(match.condition.userId);
         if (!keypair) throw tradeErr('No trading wallet — create one in the Wallet tab', 'no_wallet');
 
-        const walletId  = keypair.publicKey.toBase58();
-        const prevLock  = this.walletLocks.get(walletId) ?? Promise.resolve();
-        let   execResult: { tradeResult?: TradeResultPayload } | null = null;
+        const walletId = keypair.publicKey.toBase58();
+        const prevLock = this.walletLocks.get(walletId) ?? Promise.resolve();
+
+        let execResult: { tradeResult?: TradeResultPayload } | null = null;
+        let lockError: unknown = null;
 
         const nextLock = prevLock.then(async () => {
           try {
@@ -244,9 +272,12 @@ export class ExecutionEngine {
               ? 1
               : match.condition.maxExecutions;
             if (effectiveMax !== undefined) {
-              const count = conditionRepo.getExecutionCount(match.condition.id);
-              if (count >= effectiveMax)
-                throw tradeErr(`Execution limit reached (${count}/${effectiveMax})`, 'guard_rejected');
+              const allowed = await conditionRepo.incrementIfUnderLimit(
+                match.condition.id,
+                effectiveMax,
+              );
+              if (!allowed)
+                throw tradeErr(`Execution limit reached (${effectiveMax}/${effectiveMax})`, 'guard_rejected');
             }
 
             const tradeKey = `${match.condition.id}:${match.event.signature}`;
@@ -263,7 +294,6 @@ export class ExecutionEngine {
               if (!balCheck.allowed) throw tradeErr(balCheck.reason!, 'no_balance');
 
               rawAmountIn = Math.floor(tradeAmountSol * LAMPORTS_PER_SOL);
-
             } else {
               const sellPct = (tradeSellPercent && tradeSellPercent > 0)
                 ? tradeSellPercent
@@ -271,17 +301,12 @@ export class ExecutionEngine {
                   ? tradeAmountSol
                   : null;
 
-              if (!sellPct)
-                throw tradeErr('SELL requires tradeSellPercent (1–100)');
+              if (!sellPct) throw tradeErr('SELL requires tradeSellPercent (1–100)');
 
               const tokenCheck = await this.tradeGuard.checkTokenBalance(
-                keypair.publicKey,
-                tradeTokenMint,
-                sellPct,
+                keypair.publicKey, tradeTokenMint, sellPct,
               );
-
               if (!tokenCheck.allowed) throw tradeErr(tokenCheck.reason!, 'no_balance');
-
               rawAmountIn = Number(tokenCheck.rawSellAmount!);
 
               console.info(
@@ -297,58 +322,95 @@ export class ExecutionEngine {
               slippageBps: tradeSlippageBps ?? 100,
             });
 
-            if (!result.success) throw tradeErr(result.error ?? 'Trade failed on Jupiter');
+            await tradeExecutionRepo.insert({
+              txHash: result.txHash ?? null,
+              userId: match.condition.userId,
+              conditionId: match.condition.id,
+              manual: false,
+              direction: tradeDirection,
+              inputMint: result.inputMint,
+              outputMint: result.outputMint,
+              rawAmountIn: result.amountIn,
+              quoteOutAmount: result.quoteOutAmount ?? result.outAmount ?? null,
+              slippageBps: result.slippageBps,
+              quotePriceImpactPct: result.priceImpactPct ?? null,
+              routeSummary: result.routeSummary ?? null,
+              status: result.status,
+              executionDurationMs: result.latencyMs,
+              failureReason: result.error ?? result.confirmErr ?? null,
+              rpcProvider: result.providerLabel ?? null,
+            });
 
-            conditionRepo.incrementExecutionCount(match.condition.id);
+            if (result.txHash) {
+              await walletActivityRepo.insert(match.condition.userId, walletId, 'TRADE_EXECUTED', {
+                txHash: result.txHash,
+                status: result.status,
+                direction: tradeDirection,
+                inputMint: result.inputMint,
+                outputMint: result.outputMint,
+                rawAmountIn: result.amountIn,
+                quoteOutAmount: result.quoteOutAmount ?? result.outAmount ?? null,
+                priceImpactPct: result.priceImpactPct ?? null,
+                slippageBps: result.slippageBps,
+              });
+            }
 
-            if (result.pending) {
-              pendingTxRepo.insert(
-                result.txHash!,
+            if (!result.success && result.status === 'FAILED') {
+              throw tradeErr(result.error ?? 'Trade failed on Jupiter');
+            }
+
+            if (effectiveMax === undefined) {
+              await conditionRepo.incrementExecutionCount(match.condition.id);
+            }
+
+            if (result.status === 'PENDING' && result.txHash) {
+              await pendingTxRepo.insert(
+                result.txHash,
                 match.condition.userId,
                 match.condition.id,
                 result.amountIn,
                 result.inputMint,
                 result.outputMint,
               );
-              execResult = {
-                tradeResult: {
-                  txHash:    result.txHash,
-                  inputMint: result.inputMint,
-                  outputMint: result.outputMint,
-                  amountIn:  result.amountIn,
-                  outAmount: result.outAmount,
-                  latencyMs: result.latencyMs,
-                },
-              };
-            } else {
-              execResult = {
-                tradeResult: {
-                  txHash:    result.txHash,
-                  inputMint: result.inputMint,
-                  outputMint: result.outputMint,
-                  amountIn:  result.amountIn,
-                  outAmount: result.outAmount,
-                  latencyMs: result.latencyMs,
-                },
-              };
             }
+
+            this.walletManager.invalidateWallet(match.condition.userId);
+
+            execResult = {
+              tradeResult: {
+                status: result.status,
+                txHash: result.txHash,
+                inputMint: result.inputMint,
+                outputMint: result.outputMint,
+                amountIn: result.amountIn,
+                outAmount: result.outAmount,
+                quoteOutAmount: result.quoteOutAmount,
+                priceImpactPct: result.priceImpactPct ?? null,
+                slippageBps: result.slippageBps,
+                routeSummary: result.routeSummary,
+                providerLabel: result.providerLabel,
+                failureReason: result.error ?? result.confirmErr,
+                latencyMs: result.latencyMs,
+              },
+            };
           } catch (e) {
-            // Re-throw so the promise chain propagates the rejection
+            lockError = e;
             throw e;
           }
         }).catch(e => {
-          // Ensure the lock chain is never broken by an unhandled rejection
+         
+          if (!lockError) lockError = e;
           console.error('[Executor] Wallet lock error for', walletId, e);
         });
 
         this.walletLocks.set(walletId, nextLock);
-
         await nextLock;
-
         if (this.walletLocks.get(walletId) === nextLock) {
           this.walletLocks.delete(walletId);
         }
 
+       
+        if (lockError) throw lockError;
         if (!execResult) throw tradeErr('Wallet lock assertion failed');
         return execResult;
       }
@@ -362,9 +424,10 @@ export class ExecutionEngine {
 
 function buildSummary(actions: ActionResult[]): ExecutionSummary {
   return {
-    total:   actions.length,
+    total: actions.length,
     success: actions.filter(a => a.status === 'success').length,
-    failed:  actions.filter(a => a.status === 'failed').length,
+    pending: actions.filter(a => a.status === 'pending').length,
+    failed: actions.filter(a => a.status === 'failed').length,
   };
 }
 
@@ -393,7 +456,29 @@ function classifyError(err: unknown): { errorType: ErrorType; message: string; r
   return { errorType: 'network', message: String(err) };
 }
 
+function isPrivateHost(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  return (
+    h === 'localhost' ||
+    h === '0.0.0.0' ||
+    /^127\./.test(h) ||
+    /^10\./.test(h) ||
+    /^172\.(1[6-9]|2[0-9]|3[01])\./.test(h) ||
+    /^192\.168\./.test(h) ||
+    /^::1$/.test(h) ||
+    /^fc[0-9a-f]{2}:/i.test(h) ||
+    h.endsWith('.local') ||
+    h.endsWith('.internal')
+  );
+}
+
 function isValidUrl(url: string): boolean {
-  try { const { protocol } = new URL(url); return protocol === 'http:' || protocol === 'https:'; }
-  catch { return false; }
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    if (isPrivateHost(parsed.hostname)) return false; 
+    return true;
+  } catch {
+    return false;
+  }
 }

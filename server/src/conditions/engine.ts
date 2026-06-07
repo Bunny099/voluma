@@ -4,7 +4,7 @@ import { type NormalizedEvent } from '../ingestion/provider';
 export interface TriggerExplanation {
   reason:        string;
   matchedFields: string[];
-  confidence:    'HIGH' | 'MEDIUM' | 'LOW';
+  confidence:    'EXACT' | 'HIGH' | 'MEDIUM' | 'LOW';
   details:       Record<string, unknown>;
 }
 
@@ -52,6 +52,7 @@ export class ConditionEngine {
 
   load(condition: Condition): void {
     this.conditions.set(condition.id, condition);
+    if (!condition.enabled) return;
 
     if (condition.wallet) {
       getOrCreate(this.walletIdx, condition.wallet).add(condition.id);
@@ -74,7 +75,7 @@ export class ConditionEngine {
     cond.wallet    && this.walletIdx.get(cond.wallet)?.delete(conditionId);
     cond.tokenMint && this.tokenIdx.get(cond.tokenMint)?.delete(conditionId);
     this.globalBurst.delete(conditionId);
-    this.swapTokenConds.delete(conditionId); // ← must clean up
+    this.swapTokenConds.delete(conditionId); 
     this.cooldowns.delete(conditionId);
     this.aboveThreshold.delete(conditionId);
   }
@@ -134,21 +135,34 @@ export class ConditionEngine {
     if (event.confidence === 'LOW') return { matched: false };
     if (!event.wallet)              return { matched: false };
     if (cond.wallet && event.wallet !== cond.wallet) return { matched: false };
+    if (cond.tokenMint && !this.mintMatches(cond.tokenMint, event)) return { matched: false };
+
+    const eventTxType = event.direction !== 'UNKNOWN'
+      ? event.direction
+      : event.type === 'SWAP'
+        ? 'SWAP'
+        : event.type;
     if (
       cond.transactionType &&
       cond.transactionType !== 'ANY' &&
-      event.type !== cond.transactionType
+      eventTxType !== cond.transactionType
     ) return { matched: false };
 
     const matchedFields: string[] = ['wallet'];
     const details: Record<string, unknown> = {
       wallet:     event.wallet,
       eventType:  event.type,
+      direction:  event.direction,
       confidence: event.confidence,
     };
 
-    if (cond.minAmountSol && event.amount) {
-      const sol = event.amount / 1e9;
+    if (cond.tokenMint) {
+      matchedFields.push('tokenMint');
+      details.tokenMint = event.tokenMint;
+    }
+
+    if (cond.minAmountSol) {
+      const sol = event.amountSol ?? (event.amount ? event.amount / 1e9 : 0);
       if (sol < cond.minAmountSol) return { matched: false };
       matchedFields.push('amount');
       details.amountSol    = sol.toFixed(4);
@@ -170,7 +184,7 @@ export class ConditionEngine {
   }
 
   private evalSlidingCount(cond: Condition, event: NormalizedEvent): EvalResult {
-    if (event.type !== 'SWAP') return { matched: false };
+    if (!isSwapLike(event)) return { matched: false };
 
     if (cond.tokenMint) {
       const matched = this.mintMatches(cond.tokenMint, event);
@@ -210,7 +224,8 @@ export class ConditionEngine {
   }
 
   private evalSlidingVolume(cond: Condition, event: NormalizedEvent): EvalResult {
-    if (!event.amount) return { matched: false };
+    const amountSol = event.amountSol ?? (event.amount ? event.amount / 1e9 : undefined);
+    if (!amountSol) return { matched: false };
 
     if (cond.tokenMint) {
       const matched = this.mintMatches(cond.tokenMint, event);
@@ -224,7 +239,7 @@ export class ConditionEngine {
     const threshold = cond.minVolumeSol ?? 1_000;
    
     const arr = (this.volumes.get(key) ?? []).filter(e => e.ts >= cutoff);
-    arr.push({ ts: now, amount: event.amount! });
+    arr.push({ ts: now, amount: amountSol * 1e9 });
     if (arr.length > MAX_WINDOW_ENTRIES) arr.splice(0, arr.length - MAX_WINDOW_ENTRIES);
     this.volumes.set(key, arr);
 
@@ -252,8 +267,9 @@ export class ConditionEngine {
   }
 
   private evalLargeTransfer(cond: Condition, event: NormalizedEvent): EvalResult {
-    if (event.type !== 'TRANSFER' || !event.amount) return { matched: false };
-    const sol       = event.amount / 1e9;
+    if (event.type !== 'TRANSFER') return { matched: false };
+    const sol = event.amountSol ?? (event.amount ? event.amount / 1e9 : 0);
+    if (!sol) return { matched: false };
     const threshold = cond.minSol ?? 100;
     if (sol < threshold) return { matched: false };
 
@@ -330,6 +346,10 @@ export class ConditionEngine {
       if (!this.conditions.has(id)) this.aboveThreshold.delete(id);
     }
   }
+}
+
+function isSwapLike(event: NormalizedEvent): boolean {
+  return event.type === 'SWAP' || event.direction === 'BUY' || event.direction === 'SELL' || event.direction === 'SWAP';
 }
 
 function getOrCreate<K, V>(map: Map<K, Set<V>>, key: K): Set<V> {

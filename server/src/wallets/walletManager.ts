@@ -1,43 +1,24 @@
 import {
   Keypair,
-  Connection,
   PublicKey,
   Transaction,
   SystemProgram,
   LAMPORTS_PER_SOL,
-} from "@solana/web3.js";
+} from '@solana/web3.js';
 import {
-  createTransferCheckedInstruction,
-  getAssociatedTokenAddress,
   createAssociatedTokenAccountInstruction,
+  createTransferCheckedInstruction,
   getAccount,
+  getAssociatedTokenAddress,
   TokenAccountNotFoundError,
   TokenInvalidAccountOwnerError,
-} from "@solana/spl-token";
-import * as crypto from "crypto";
-import { walletRepo, type WalletRecord } from "../db/walletRepo";
-import { pendingTxRepo } from "../db/pendingTxRepo";
-
-const TOKEN_PROGRAM_ID = new PublicKey(
-  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-);
-const TOKEN_2022_PROGRAM_ID = new PublicKey(
-  "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
-);
-const ASSOCIATED_TOKEN_PROGRAM = new PublicKey(
-  "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe1bR",
-);
-
-// Well-known mint → symbol mapping (display only)
-const KNOWN_SYMBOLS = new Map([
-  ["So11111111111111111111111111111111111111112", "SOL"],
-  ["EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "USDC"],
-  ["Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", "USDT"],
-  ["DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263", "BONK"],
-  ["JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN", "JUP"],
-  ["mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So", "mSOL"],
-  ["7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs", "ETH"],
-]);
+} from '@solana/spl-token';
+import crypto from 'crypto';
+import { TTLCache } from '../lib/ttl-cache';
+import { RPCManager } from '../rpc/rpcManager';
+import { walletRepo, type WalletRecord } from '../db/walletRepo';
+import { pendingTxRepo } from '../db/pendingTxRepo';
+import { walletActivityRepo, type WalletActivityLog } from '../db/walletActivityRepo';
 
 export interface TokenBalance {
   mint: string;
@@ -48,11 +29,17 @@ export interface TokenBalance {
 
 export interface PendingTxInfo {
   txHash: string;
-  status: "PENDING" | "CONFIRMED" | "FAILED";
+  status: 'PENDING' | 'CONFIRMED' | 'FAILED';
   inputMint: string;
   outputMint: string;
   amountIn: number;
   createdAt: number;
+  failureReason?: string | null;
+}
+
+export interface WalletSecurityInfo {
+  encryptionVersion: number;
+  supportsExport: boolean;
 }
 
 export interface WalletInfo {
@@ -62,74 +49,64 @@ export interface WalletInfo {
   balanceSol: number | null;
   tokens: TokenBalance[];
   pendingTxs: PendingTxInfo[];
+  recentActivity: WalletActivityLog[];
+  security: WalletSecurityInfo;
 }
 
-function getEncKey(): Buffer {
-  const raw = process.env.WALLET_ENCRYPTION_KEY!;
-  return Buffer.from(raw.padEnd(32, "0").slice(0, 32), "utf8");
+interface EncryptionEnvelope {
+  encryptedKey: string;
+  iv: string;
+  encryptionVersion: number;
+  kdfSalt: string | null;
+  authTag: string | null;
 }
 
-function encrypt(secretKey: Uint8Array): { encryptedKey: string; iv: string } {
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv("aes-256-cbc", getEncKey(), iv);
-  const enc = Buffer.concat([
-    cipher.update(Buffer.from(secretKey)),
-    cipher.final(),
-  ]);
-  return { encryptedKey: enc.toString("hex"), iv: iv.toString("hex") };
-}
-
-function decrypt(encryptedKey: string, iv: string): Uint8Array {
-  const decipher = crypto.createDecipheriv(
-    "aes-256-cbc",
-    getEncKey(),
-    Buffer.from(iv, "hex"),
-  );
-  const decrypted = Buffer.concat([
-    decipher.update(Buffer.from(encryptedKey, "hex")),
-    decipher.final(),
-  ]);
-  return new Uint8Array(decrypted);
-}
-
+const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
 const CONFIRM_TIMEOUT = 30_000;
 const TRADE_CACHE_MAX = 5_000;
+const BALANCE_CACHE_TTL_MS = 3_000;
 
 export class WalletManager {
   private cache = new Map<string, WalletRecord>();
   private tradeCache = new Set<string>();
+  private readonly balanceCache = new TTLCache<string, unknown>(BALANCE_CACHE_TTL_MS, 500);
 
-  constructor(private readonly connection: Connection) {
-    this.loadFromDB();
-  }
+  constructor(
+    private readonly rpcManager: RPCManager,
+    private readonly resolveSymbol: (mint: string) => string,
+  ) {}
 
-  private loadFromDB(): void {
-    for (const record of walletRepo.getAll()) {
+  async initialize(): Promise<void> {
+    const records = await walletRepo.getAll();
+    for (const record of records) {
       this.cache.set(record.userId, record);
     }
     console.info(`[WalletManager] Loaded ${this.cache.size} wallet(s) from DB`);
   }
 
-  // ── Create / retrieve ──────────────────────────────────────────────────────
-
-  createWallet(userId: string): { publicKey: string } {
+  async createWallet(userId: string): Promise<{ publicKey: string }> {
     const existing = this.cache.get(userId);
     if (existing) return { publicKey: existing.publicKey };
 
     const keypair = Keypair.generate();
-    const { encryptedKey, iv } = encrypt(keypair.secretKey);
+    const encrypted = encryptV2(keypair.secretKey);
 
     const record: WalletRecord = {
       userId,
       publicKey: keypair.publicKey.toBase58(),
-      encryptedKey,
-      iv,
+      encryptedKey: encrypted.encryptedKey,
+      iv: encrypted.iv,
+      encryptionVersion: encrypted.encryptionVersion,
+      kdfSalt: encrypted.kdfSalt,
+      authTag: encrypted.authTag,
       createdAt: Date.now(),
       lastUsedAt: null,
     };
 
-    walletRepo.insert(record);
+    await walletRepo.insert(record);
     this.cache.set(userId, record);
+    await walletActivityRepo.insert(userId, record.publicKey, 'WALLET_CREATED');
 
     return { publicKey: record.publicKey };
   }
@@ -142,37 +119,65 @@ export class WalletManager {
     return this.cache.get(userId)?.publicKey ?? null;
   }
 
+  invalidateWallet(userId: string): void {
+    this.balanceCache.delete(`balance:${userId}`);
+    this.balanceCache.delete(`spl:${userId}`);
+    this.balanceCache.delete(`spl2022:${userId}`);
+  }
+
   getKeypair(userId: string): Keypair | null {
     const record = this.cache.get(userId);
     if (!record) return null;
+
     try {
-      const secret = decrypt(record.encryptedKey, record.iv);
-      walletRepo.touch(userId);
+      const secret = decryptRecord(record);
+      walletRepo.touch(userId).catch((error) => {
+        console.error('[WalletManager] touch failed:', error.message);
+      });
+
+      if (record.encryptionVersion < 2) {
+        this.migrateLegacyEncryption(userId, record, secret).catch((error) => {
+          console.error('[WalletManager] legacy migration failed:', error.message);
+        });
+      }
+
       return Keypair.fromSecretKey(secret);
     } catch {
-      console.error("[WalletManager] Decryption failed for userId:", userId);
+      console.error('[WalletManager] Decryption failed for userId:', userId);
       return null;
     }
   }
-
-  // ── Balance + token info ───────────────────────────────────────────────────
 
   async getWalletInfo(userId: string): Promise<WalletInfo | null> {
     const record = this.cache.get(userId);
     if (!record) return null;
 
-    const pubkey = new PublicKey(record.publicKey);
+    const publicKey = new PublicKey(record.publicKey);
+    const connection = this.rpcManager.getHttpConnection();
 
-    const [lamports, tokenAccounts, token2022Accounts] = await Promise.all([
-      this.connection.getBalance(pubkey, "confirmed").catch(() => null),
-      this.connection
-        .getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID })
-        .catch(() => null),
-      this.connection
-        .getParsedTokenAccountsByOwner(pubkey, {
-          programId: TOKEN_2022_PROGRAM_ID,
-        })
-        .catch(() => null),
+    const [lamports, tokenAccounts, token2022Accounts, allPending, recentActivity] = await Promise.all([
+      this.balanceCache.getOrSet(
+        `balance:${userId}`,
+        () => connection.getBalance(publicKey, 'confirmed').catch(() => null),
+      ) as Promise<number | null>,
+      this.balanceCache.getOrSet(
+        `spl:${userId}`,
+        () => connection.getParsedTokenAccountsByOwner(
+          publicKey,
+          { programId: TOKEN_PROGRAM_ID },
+          'confirmed',
+        ).catch(() => null),
+      ) as Promise<any>,
+      this.balanceCache.getOrSet(
+        `spl2022:${userId}`,
+        () => connection.getParsedTokenAccountsByOwner(
+          publicKey,
+          { programId: TOKEN_2022_PROGRAM_ID },
+          'confirmed',
+        ).catch(() => null),
+      ) as Promise<any>,
+      pendingTxRepo.getByWallet(userId),
+      walletActivityRepo.getRecentByUser(userId, 20),
     ]);
 
     const allTokenAccounts = [
@@ -181,56 +186,73 @@ export class WalletManager {
     ];
 
     const tokens: TokenBalance[] = allTokenAccounts
-      .map((a) => {
-        const info = (a.account.data as any).parsed?.info;
+      .map((account) => {
+        const info = (account.account.data as any).parsed?.info;
         const uiAmount = info?.tokenAmount?.uiAmount as number | null;
         if (!info) return null;
-        const balance = uiAmount ?? 0;
+
         return {
           mint: info.mint as string,
-          symbol: KNOWN_SYMBOLS.get(info.mint) ?? "UNKNOWN",
-          balance,
+          symbol: this.resolveSymbol(info.mint as string),
+          balance: uiAmount ?? 0,
           decimals: info.tokenAmount.decimals as number,
         };
       })
-      .filter((t): t is TokenBalance => t !== null && t.balance > 0);
+      .filter((token): token is TokenBalance => token !== null && token.balance > 0);
 
-    // Attach any pending/confirmed txs associated with this wallet's public key
-    const allPending = pendingTxRepo.getByWallet(record.userId);
     const pendingTxs: PendingTxInfo[] = allPending.map((tx) => ({
       txHash: tx.txHash,
       status: tx.status,
-      inputMint: tx.inputMint ?? "",
-      outputMint: tx.outputMint ?? "",
+      inputMint: tx.inputMint ?? '',
+      outputMint: tx.outputMint ?? '',
       amountIn: tx.rawAmountIn ?? 0,
       createdAt: tx.createdAt,
+      failureReason: tx.failureReason,
     }));
 
     return {
       publicKey: record.publicKey,
       createdAt: record.createdAt,
-      lastUsedAt: record.lastUsedAt ?? null,
+      lastUsedAt: record.lastUsedAt,
       balanceSol: lamports !== null ? lamports / LAMPORTS_PER_SOL : null,
       tokens,
       pendingTxs,
+      recentActivity,
+      security: {
+        encryptionVersion: record.encryptionVersion,
+        supportsExport: true,
+      },
     };
   }
 
-  // ── SOL withdrawal ─────────────────────────────────────────────────────────
+  async exportWallet(userId: string): Promise<{
+    publicKey: string;
+    privateKeyBase58: string;
+    secretKeyJson: string;
+  }> {
+    const keypair = this.getKeypair(userId);
+    if (!keypair) throw new Error('No trading wallet found');
+
+    return {
+      publicKey: keypair.publicKey.toBase58(),
+      privateKeyBase58: encodeBase58(keypair.secretKey),
+      secretKeyJson: JSON.stringify([...keypair.secretKey]),
+    };
+  }
 
   async withdrawSOL(
     userId: string,
     destination: string,
     amountSol: number,
-  ): Promise<{ txHash: string; status: "PENDING" | "CONFIRMED" }> {
+  ): Promise<{ txHash: string; status: 'PENDING' | 'CONFIRMED' }> {
     const keypair = this.getKeypair(userId);
-    if (!keypair) throw new Error("No trading wallet found");
+    if (!keypair) throw new Error('No trading wallet found');
 
+    const connection = this.rpcManager.getHttpConnection();
     const destPubkey = new PublicKey(destination);
     const lamports = Math.floor(amountSol * LAMPORTS_PER_SOL);
 
-    const { blockhash } = await this.connection.getLatestBlockhash("confirmed");
-
+    const { blockhash } = await connection.getLatestBlockhash('confirmed');
     const tx = new Transaction({
       recentBlockhash: blockhash,
       feePayer: keypair.publicKey,
@@ -241,31 +263,30 @@ export class WalletManager {
         lamports,
       }),
     );
-
     tx.sign(keypair);
 
-    const txHash = await this.connection.sendRawTransaction(tx.serialize(), {
+    const txHash = await connection.sendRawTransaction(tx.serialize(), {
       skipPreflight: false,
       maxRetries: 0,
     });
-
     const confirm = await this.confirmWithTimeout(txHash);
 
+    this.invalidateWallet(userId);
+
     if (!confirm.confirmed) {
-      // Timeout — persist as pending so background checker can resolve later
-      pendingTxRepo.insert(
+      await pendingTxRepo.insert(
         txHash,
         userId,
         null,
         lamports,
-        "So11111111111111111111111111111111111111112",
+        'So11111111111111111111111111111111111111112',
         destination,
       );
-      return { txHash, status: "PENDING" };
+      return { txHash, status: 'PENDING' };
     }
 
-    walletRepo.touch(userId);
-    return { txHash, status: "CONFIRMED" };
+    await walletRepo.touch(userId);
+    return { txHash, status: 'CONFIRMED' };
   }
 
   async withdrawToken(
@@ -273,38 +294,30 @@ export class WalletManager {
     destination: string,
     tokenMint: string,
     uiAmount: number,
-  ): Promise<{ txHash: string; status: "PENDING" | "CONFIRMED" }> {
+  ): Promise<{ txHash: string; status: 'PENDING' | 'CONFIRMED' }> {
     const keypair = this.getKeypair(userId);
-    if (!keypair) throw new Error("No trading wallet found");
+    if (!keypair) throw new Error('No trading wallet found');
 
+    const connection = this.rpcManager.getHttpConnection();
     const mintPubkey = new PublicKey(tokenMint);
     const destPubkey = new PublicKey(destination);
 
-    const mintInfo = await this.connection.getParsedAccountInfo(
-      mintPubkey,
-      "confirmed",
-    );
+    const mintInfo = await connection.getParsedAccountInfo(mintPubkey, 'confirmed');
     const parsedMint = (mintInfo.value?.data as any)?.parsed?.info;
     if (!parsedMint) throw new Error(`Cannot fetch mint info for ${tokenMint}`);
     const decimals: number = parsedMint.decimals;
 
     const multiplier = BigInt(10 ** decimals);
     const uiAmountStr = uiAmount.toFixed(decimals);
-    const [intPart, fracPart = ""] = uiAmountStr.split(".");
-    const fracPadded = fracPart.padEnd(decimals, "0").slice(0, decimals);
-    const rawAmount = BigInt(intPart!) * multiplier + BigInt(fracPadded);
+    const [intPart, fracPart = ''] = uiAmountStr.split('.');
+    const fracPadded = fracPart.padEnd(decimals, '0').slice(0, decimals);
+    const rawAmount = BigInt(intPart ?? '0') * multiplier + BigInt(fracPadded);
 
-    if (rawAmount <= 0n)
-      throw new Error("Transfer amount must be greater than zero");
+    if (rawAmount <= 0n) throw new Error('Transfer amount must be greater than zero');
 
-    const sourceATA = await getAssociatedTokenAddress(
-      mintPubkey,
-      keypair.publicKey,
-    );
-
+    const sourceATA = await getAssociatedTokenAddress(mintPubkey, keypair.publicKey);
     const destATA = await getAssociatedTokenAddress(mintPubkey, destPubkey);
-
-    const { blockhash } = await this.connection.getLatestBlockhash("confirmed");
+    const { blockhash } = await connection.getLatestBlockhash('confirmed');
 
     const tx = new Transaction({
       recentBlockhash: blockhash,
@@ -313,51 +326,47 @@ export class WalletManager {
 
     let destATAExists = true;
     try {
-      await getAccount(this.connection, destATA, "confirmed");
-    } catch (e) {
+      await getAccount(connection, destATA, 'confirmed');
+    } catch (error) {
       if (
-        e instanceof TokenAccountNotFoundError ||
-        e instanceof TokenInvalidAccountOwnerError
+        error instanceof TokenAccountNotFoundError ||
+        error instanceof TokenInvalidAccountOwnerError
       ) {
         destATAExists = false;
       } else {
-        throw e;
+        throw error;
       }
     }
 
     if (!destATAExists) {
-      tx.add(
-        createAssociatedTokenAccountInstruction(
-          keypair.publicKey, // payer
-          destATA, // account to create
-          destPubkey, // owner of new account
-          mintPubkey, // mint
-        ),
-      );
+      tx.add(createAssociatedTokenAccountInstruction(
+        keypair.publicKey,
+        destATA,
+        destPubkey,
+        mintPubkey,
+      ));
     }
 
-    tx.add(
-      createTransferCheckedInstruction(
-        sourceATA, // from
-        mintPubkey, // mint
-        destATA, // to
-        keypair.publicKey, // owner
-        rawAmount, // amount in raw units
-        decimals, // decimals (validated on-chain)
-      ),
-    );
-
+    tx.add(createTransferCheckedInstruction(
+      sourceATA,
+      mintPubkey,
+      destATA,
+      keypair.publicKey,
+      rawAmount,
+      decimals,
+    ));
     tx.sign(keypair);
 
-    const txHash = await this.connection.sendRawTransaction(tx.serialize(), {
+    const txHash = await connection.sendRawTransaction(tx.serialize(), {
       skipPreflight: false,
       maxRetries: 0,
     });
-
     const confirm = await this.confirmWithTimeout(txHash);
 
+    this.invalidateWallet(userId);
+
     if (!confirm.confirmed) {
-      pendingTxRepo.insert(
+      await pendingTxRepo.insert(
         txHash,
         userId,
         null,
@@ -365,14 +374,12 @@ export class WalletManager {
         tokenMint,
         destination,
       );
-      return { txHash, status: "PENDING" };
+      return { txHash, status: 'PENDING' };
     }
 
-    walletRepo.touch(userId);
-    return { txHash, status: "CONFIRMED" };
+    await walletRepo.touch(userId);
+    return { txHash, status: 'CONFIRMED' };
   }
-
-  // ── Trade dedup guard ──────────────────────────────────────────────────────
 
   markTradeSubmitted(key: string): boolean {
     if (this.tradeCache.has(key)) return false;
@@ -382,32 +389,136 @@ export class WalletManager {
   }
 
   private trimTradeCache(): void {
-    const arr = [...this.tradeCache];
+    const entries = [...this.tradeCache];
     this.tradeCache.clear();
-    for (const k of arr.slice(arr.length >>> 1)) this.tradeCache.add(k);
+    for (const entry of entries.slice(entries.length >>> 1)) {
+      this.tradeCache.add(entry);
+    }
   }
-
-  // ── Confirmation ───────────────────────────────────────────────────────────
 
   private async confirmWithTimeout(
     txHash: string,
   ): Promise<{ confirmed: boolean; err?: string }> {
+    const connection = this.rpcManager.getHttpConnection();
     const deadline = Date.now() + CONFIRM_TIMEOUT;
     while (Date.now() < deadline) {
-      const status = await this.connection.getSignatureStatus(txHash, {
+      const status = await connection.getSignatureStatus(txHash, {
         searchTransactionHistory: false,
       });
-      const conf = status?.value?.confirmationStatus;
-      if (conf === "confirmed" || conf === "finalized")
+      const confirmation = status?.value?.confirmationStatus;
+      if (confirmation === 'confirmed' || confirmation === 'finalized') {
         return { confirmed: true };
-      if (status?.value?.err)
+      }
+      if (status?.value?.err) {
         return {
           confirmed: false,
           err: `On-chain failure: ${JSON.stringify(status.value.err)}`,
         };
-      await new Promise((r) => setTimeout(r, 1_200));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1_200));
     }
-
     return { confirmed: false };
   }
+
+  private async migrateLegacyEncryption(
+    userId: string,
+    record: WalletRecord,
+    secretKey: Uint8Array,
+  ): Promise<void> {
+    const encrypted = encryptV2(secretKey);
+    await walletRepo.updateEncryption(userId, encrypted);
+
+    this.cache.set(userId, {
+      ...record,
+      encryptedKey: encrypted.encryptedKey,
+      iv: encrypted.iv,
+      encryptionVersion: encrypted.encryptionVersion,
+      kdfSalt: encrypted.kdfSalt,
+      authTag: encrypted.authTag,
+    });
+  }
+}
+
+function getMasterSecret(): string {
+  return process.env.WALLET_ENCRYPTION_KEY ?? '';
+}
+
+function legacyKey(): Buffer {
+  return Buffer.from(getMasterSecret().padEnd(32, '0').slice(0, 32), 'utf8');
+}
+
+function deriveKeyV2(saltHex: string): Buffer {
+  return crypto.scryptSync(getMasterSecret(), Buffer.from(saltHex, 'hex'), 32);
+}
+
+function encryptV2(secretKey: Uint8Array): EncryptionEnvelope {
+  const iv = crypto.randomBytes(12);
+  const salt = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv('aes-256-gcm', deriveKeyV2(salt.toString('hex')), iv);
+  const encrypted = Buffer.concat([
+    cipher.update(Buffer.from(secretKey)),
+    cipher.final(),
+  ]);
+
+  return {
+    encryptedKey: encrypted.toString('hex'),
+    iv: iv.toString('hex'),
+    encryptionVersion: 2,
+    kdfSalt: salt.toString('hex'),
+    authTag: cipher.getAuthTag().toString('hex'),
+  };
+}
+
+function decryptRecord(record: WalletRecord): Uint8Array {
+  if (record.encryptionVersion >= 2 && record.kdfSalt && record.authTag) {
+    const decipher = crypto.createDecipheriv(
+      'aes-256-gcm',
+      deriveKeyV2(record.kdfSalt),
+      Buffer.from(record.iv, 'hex'),
+    );
+    decipher.setAuthTag(Buffer.from(record.authTag, 'hex'));
+
+    return new Uint8Array(Buffer.concat([
+      decipher.update(Buffer.from(record.encryptedKey, 'hex')),
+      decipher.final(),
+    ]));
+  }
+
+  const decipher = crypto.createDecipheriv(
+    'aes-256-cbc',
+    legacyKey(),
+    Buffer.from(record.iv, 'hex'),
+  );
+
+  return new Uint8Array(Buffer.concat([
+    decipher.update(Buffer.from(record.encryptedKey, 'hex')),
+    decipher.final(),
+  ]));
+}
+
+function encodeBase58(bytes: Uint8Array): string {
+  const alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+  if (!bytes.length) return '';
+
+  let value = 0n;
+  for (const byte of bytes) {
+    value = (value << 8n) + BigInt(byte);
+  }
+
+  let encoded = '';
+  while (value > 0n) {
+    const remainder = Number(value % 58n);
+    encoded = alphabet[remainder] + encoded;
+    value /= 58n;
+  }
+
+  for (const byte of bytes) {
+    if (byte === 0) {
+      encoded = alphabet[0] + encoded;
+    } else {
+      break;
+    }
+  }
+
+  return encoded;
 }

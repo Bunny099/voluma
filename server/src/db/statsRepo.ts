@@ -1,35 +1,54 @@
-import db from './db';
+import pool from './pool';
 
 export interface StatsRecord {
   conditionId:   string;
   triggerCount:  number;
-  lastTriggered: number | null;
+  lastTriggered: number | null; 
 }
 
-const stmts = {
-  increment: db.prepare(`
-    INSERT INTO trigger_stats (conditionId, triggerCount, lastTriggered)
-    VALUES (@conditionId, 1, @lastTriggered)
-    ON CONFLICT(conditionId) DO UPDATE SET
-      triggerCount  = triggerCount + 1,
-      lastTriggered = @lastTriggered
-  `),
-  get:    db.prepare(`SELECT * FROM trigger_stats WHERE conditionId = ?`),
-  getAll: db.prepare(`SELECT * FROM trigger_stats`),
-  delete: db.prepare(`DELETE FROM trigger_stats WHERE conditionId = ?`),
-};
-
 export const statsRepo = {
-  increment(conditionId: string, ts: number): void {
-    stmts.increment.run({ conditionId, lastTriggered: ts });
+  async increment(conditionId: string, ts: number): Promise<void> {
+    await pool.query(
+      `INSERT INTO trigger_stats (condition_id, trigger_count, last_triggered)
+       VALUES ($1, 1, $2)
+       ON CONFLICT (condition_id) DO UPDATE
+         SET trigger_count  = trigger_stats.trigger_count + 1,
+             last_triggered = EXCLUDED.last_triggered`,
+      [conditionId, new Date(ts)],
+    );
   },
-  get(conditionId: string): StatsRecord | null {
-    return (stmts.get.get(conditionId) as StatsRecord | undefined) ?? null;
+
+  async get(conditionId: string): Promise<StatsRecord | null> {
+    const { rows } = await pool.query(
+      `SELECT * FROM trigger_stats WHERE condition_id = $1`,
+      [conditionId],
+    );
+    if (!rows[0]) return null;
+    const r = rows[0];
+    return {
+      conditionId:   r.condition_id  as string,
+      triggerCount:  r.trigger_count as number,
+      lastTriggered: r.last_triggered
+        ? new Date(r.last_triggered as string).getTime()
+        : null,
+    };
   },
-  getAll(): StatsRecord[] {
-    return stmts.getAll.all() as StatsRecord[];
+
+  async getAll(): Promise<StatsRecord[]> {
+    const { rows } = await pool.query(`SELECT * FROM trigger_stats`);
+    return rows.map(r => ({
+      conditionId:   r.condition_id  as string,
+      triggerCount:  r.trigger_count as number,
+      lastTriggered: r.last_triggered
+        ? new Date(r.last_triggered as string).getTime()
+        : null,
+    }));
   },
-  delete(conditionId: string): void {
-    stmts.delete.run(conditionId);
+
+  async delete(conditionId: string): Promise<void> {
+    await pool.query(
+      `DELETE FROM trigger_stats WHERE condition_id = $1`,
+      [conditionId],
+    );
   },
 };

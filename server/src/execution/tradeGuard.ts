@@ -1,4 +1,6 @@
-import { Connection, PublicKey } from '@solana/web3.js';
+import { PublicKey } from '@solana/web3.js';
+import { TTLCache } from '../lib/ttl-cache';
+import { RPCManager } from '../rpc/rpcManager';
 
 const FEE_BUFFER_SOL  = 0.005;    
 const MAX_PER_MINUTE  = 5;
@@ -55,8 +57,10 @@ class RateLimiter {
 
 export class TradeGuard {
   private readonly limiter = new RateLimiter();
+  private readonly balanceCache = new TTLCache<string, number>(3_000, 500);
+  private readonly tokenBalanceCache = new TTLCache<string, TokenBalanceResult | null>(3_000, 500);
 
-  constructor(private readonly connection: Connection) {}
+  constructor(private readonly rpcManager: RPCManager) {}
   validateMint(mint: string): GuardResult {
     if (!BASE58_RE.test(mint)) {
       return {
@@ -70,7 +74,10 @@ export class TradeGuard {
   
   async checkBalance(publicKey: PublicKey, amountSol: number): Promise<GuardResult> {
     try {
-      const lamports   = await this.connection.getBalance(publicKey, 'confirmed');
+      const lamports = await this.balanceCache.getOrSet(
+        `sol:${publicKey.toBase58()}`,
+        () => this.rpcManager.getHttpConnection().getBalance(publicKey, 'confirmed'),
+      );
       const balanceSol = lamports / LAMPORTS;
       const required   = amountSol + FEE_BUFFER_SOL;
       if (balanceSol < required) {
@@ -93,30 +100,40 @@ export class TradeGuard {
     tokenMint: string,
   ): Promise<TokenBalanceResult | null> {
     try {
-      const mintPubkey = new PublicKey(tokenMint);
-      const accounts   = await this.connection.getParsedTokenAccountsByOwner(
-        publicKey,
-        { mint: mintPubkey },
-        'confirmed',
+      return await this.tokenBalanceCache.getOrSet(
+        `${publicKey.toBase58()}:${tokenMint}`,
+        async () => {
+          const mintPubkey = new PublicKey(tokenMint);
+          const accounts = await this.rpcManager.getHttpConnection().getParsedTokenAccountsByOwner(
+            publicKey,
+            { mint: mintPubkey },
+            'confirmed',
+          );
+
+          if (!accounts.value.length) return null;
+
+          let best: TokenBalanceResult | null = null;
+          for (const acct of accounts.value) {
+            const info = (acct.account.data as any).parsed?.info;
+            const decimals = info?.tokenAmount?.decimals as number;
+            const uiBalance = info?.tokenAmount?.uiAmount as number | null;
+            const rawStr = info?.tokenAmount?.amount as string | undefined;
+
+            if (
+              decimals === undefined ||
+              uiBalance === null ||
+              uiBalance === undefined ||
+              !rawStr
+            ) continue;
+
+            const rawBalance = BigInt(rawStr);
+            if (!best || rawBalance > best.rawBalance) {
+              best = { rawBalance, decimals, uiBalance };
+            }
+          }
+          return best;
+        },
       );
-
-      if (!accounts.value.length) return null;
-
-      let best: TokenBalanceResult | null = null;
-      for (const acct of accounts.value) {
-        const info      = (acct.account.data as any).parsed?.info;
-        const decimals  = info?.tokenAmount?.decimals as number;
-        const uiBalance = info?.tokenAmount?.uiAmount  as number | null;
-        const rawStr    = info?.tokenAmount?.amount    as string | undefined;
-
-        if (decimals === undefined || uiBalance === null || uiBalance === undefined || !rawStr) continue;
-
-        const rawBalance = BigInt(rawStr);
-        if (!best || rawBalance > best.rawBalance) {
-          best = { rawBalance, decimals, uiBalance };
-        }
-      }
-      return best;
     } catch {
       return null;
     }
@@ -125,7 +142,7 @@ export class TradeGuard {
   async checkTokenBalance(
     publicKey:   PublicKey,
     tokenMint:   string,
-    sellPercent: number, // 0 < sellPercent <= 100
+    sellPercent: number, 
   ): Promise<GuardResult & { rawSellAmount?: bigint; decimals?: number }> {
     if (sellPercent <= 0 || sellPercent > 100) {
       return { allowed: false, reason: `Sell percentage must be between 1 and 100, got ${sellPercent}` };
@@ -156,7 +173,7 @@ export class TradeGuard {
     };
   }
 
-  /** Per-user trade rate limit: max 5 trades per minute */
+  
   checkRateLimit(userId: string): GuardResult {
     if (!this.limiter.allow(userId)) {
       return {

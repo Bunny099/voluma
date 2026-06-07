@@ -9,7 +9,7 @@ export class EventQueue<T> {
     private readonly concurrency: number = 20,
   ) {}
 
-  /** Returns true if enqueued, false if dropped. */
+
   push(item: T): boolean {
     if (this.queue.length >= this.maxSize) return false;
     this.queue.push(item);

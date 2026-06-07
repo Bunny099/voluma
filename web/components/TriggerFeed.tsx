@@ -9,11 +9,11 @@ function shorten(s: string, n = 10) { return `${s.slice(0, n)}…${s.slice(-4)}`
 type Importance = 'critical' | 'high' | 'normal';
 
 function importance(ev: TriggerEvent): Importance {
-  const sol      = ev.amount ? ev.amount / 1e9 : 0;
+  const sol      = ev.amountSol ?? (ev.amount ? ev.amount / 1e9 : 0);
   const hasTrade = ev.execution?.actions.some(a => a.type === 'TRADE');
   if (ev.conditionType === 'LARGE_TRANSFER') return sol >= 1_000 ? 'critical' : 'high';
   if (hasTrade || ev.conditionType === 'TOKEN_VOLUME') return 'high';
-  if (ev.explanation?.confidence === 'HIGH' && sol >= 100) return 'high';
+  if ((ev.explanation?.confidence === 'EXACT' || ev.explanation?.confidence === 'HIGH') && sol >= 100) return 'high';
   return 'normal';
 }
 
@@ -25,9 +25,10 @@ const COND_COLORS: Record<string, string> = {
 };
 
 const CONF_CFG: Record<string, { color: string; bg: string; border: string }> = {
+  EXACT:  { color:'#d4ff00', bg:'rgba(212,255,0,0.12)',   border:'rgba(212,255,0,0.28)'   },
   HIGH:   { color:'#d4ff00', bg:'rgba(212,255,0,0.08)',   border:'rgba(212,255,0,0.2)'   },
   MEDIUM: { color:'#fbbf24', bg:'rgba(251,191,36,0.08)',  border:'rgba(251,191,36,0.2)'  },
-  LOW:    { color:'#3d4452', bg:'rgba(61,68,82,0.08)',    border:'rgba(61,68,82,0.2)'    },
+  LOW:    { color:'#5a6b7e', bg:'rgba(61,68,82,0.08)',    border:'rgba(61,68,82,0.2)'    },
 };
 
 function TradeCard({ result, status, error }: { result?: TradeResultPayload; status: ActionResult['status']; error?: string }) {
@@ -41,6 +42,27 @@ function TradeCard({ result, status, error }: { result?: TradeResultPayload; sta
           <p style={{ fontSize:'0.78rem', fontWeight:600, color:'#f87171', marginBottom:2 }}>Trade failed</p>
           {error && <p style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.68rem', color:'rgba(248,113,113,0.6)' }}>{error}</p>}
         </div>
+      </div>
+    );
+  }
+  if (status === 'pending' && result) {
+    return (
+      <div style={{ padding:'10px 12px', borderRadius:9, background:'rgba(251,191,36,0.05)', border:'1px solid rgba(251,191,36,0.2)' }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:5 }}>
+          <span style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.72rem', fontWeight:700, color:'#fbbf24' }}>
+            … PENDING
+          </span>
+          <span style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.62rem', color:'#5a6b7e' }}>{result.latencyMs}ms</span>
+        </div>
+        <p style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.64rem', color:'#8a939f', marginBottom:4 }}>
+          Awaiting on-chain confirmation
+        </p>
+        {result.txHash && (
+          <a href={`https://solscan.io/tx/${result.txHash}`} target="_blank" rel="noopener noreferrer"
+            style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.62rem', color:'#fbbf24', textDecoration:'none' }}>
+            {shorten(result.txHash, 16)} ↗
+          </a>
+        )}
       </div>
     );
   }
@@ -61,16 +83,28 @@ function TradeCard({ result, status, error }: { result?: TradeResultPayload; sta
             {solAmt} SOL {isBuy ? '→' : '←'} {shorten(token, 6)}
           </span>
         </div>
-        <span style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.62rem', color:'#3d4452' }}>{result.latencyMs}ms</span>
+        <span style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.62rem', color:'#5a6b7e' }}>{result.latencyMs}ms</span>
       </div>
       {result.txHash && (
         <a href={`https://solscan.io/tx/${result.txHash}`} target="_blank" rel="noopener noreferrer"
-          style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.62rem', color:'#3d4452', textDecoration:'none', transition:'color 0.15s' }}
+          style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.62rem', color:'#5a6b7e', textDecoration:'none', transition:'color 0.15s' }}
           onMouseEnter={e => (e.currentTarget.style.color='#8a939f')}
-          onMouseLeave={e => (e.currentTarget.style.color='#3d4452')}>
+          onMouseLeave={e => (e.currentTarget.style.color='#5a6b7e')}>
           {shorten(result.txHash, 16)} ↗
         </a>
       )}
+      <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginTop:7 }}>
+        {result.slippageBps !== undefined && (
+          <span style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.58rem', color:'#5a6b7e' }}>
+            slip {result.slippageBps}bps
+          </span>
+        )}
+        {result.priceImpactPct !== undefined && result.priceImpactPct !== null && (
+          <span style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.58rem', color: result.priceImpactPct > 5 ? '#fbbf24' : '#5a6b7e' }}>
+            impact {result.priceImpactPct.toFixed(2)}%
+          </span>
+        )}
+      </div>
     </div>
   );
 }
@@ -88,6 +122,7 @@ function SummaryBar({ summary }: { summary: ExecutionSummary }) {
     }}>
       <span>{ok ? '✓' : '✗'}</span>
       <span>{summary.success}/{summary.total} actions</span>
+      {summary.pending > 0 && <span>· {summary.pending} pending</span>}
       {summary.failed > 0 && <span>· {summary.failed} failed</span>}
     </span>
   );
@@ -97,9 +132,10 @@ function ActionBadge({ action }: { action: ActionResult }) {
   if (action.type === 'TRADE') return null;
   const s = {
     success: { color:'#d4ff00', bg:'rgba(212,255,0,0.08)',   border:'rgba(212,255,0,0.2)'   },
+    pending: { color:'#fbbf24', bg:'rgba(251,191,36,0.08)',  border:'rgba(251,191,36,0.2)'  },
     failed:  { color:'#f87171', bg:'rgba(248,113,113,0.08)', border:'rgba(248,113,113,0.2)' },
-    skipped: { color:'#3d4452', bg:'rgba(61,68,82,0.08)',    border:'rgba(61,68,82,0.2)'    },
-  }[action.status] ?? { color:'#3d4452', bg:'rgba(61,68,82,0.08)', border:'rgba(61,68,82,0.2)' };
+    skipped: { color:'#5a6b7e', bg:'rgba(61,68,82,0.08)',    border:'rgba(61,68,82,0.2)'    },
+  }[action.status] ?? { color:'#5a6b7e', bg:'rgba(61,68,82,0.08)', border:'rgba(61,68,82,0.2)' };
 
   return (
     <span title={`${action.attempts} attempt${action.attempts !== 1 ? 's' : ''} · ${action.durationMs}ms`} style={{
@@ -160,11 +196,23 @@ function ExecutionRow({ ev, idx, isNew }: { ev: TriggerEvent; idx: number; isNew
             <span style={{
               fontFamily: 'JetBrains Mono, monospace', fontSize: '0.6rem', fontWeight: 700,
               padding: '2px 7px', borderRadius: 5, flexShrink: 0,
-              background: tradAct.status === 'failed' ? 'rgba(248,113,113,0.08)' : 'rgba(212,255,0,0.08)',
-              color:      tradAct.status === 'failed' ? '#f87171' : '#d4ff00',
-              border:     `1px solid ${tradAct.status === 'failed' ? 'rgba(248,113,113,0.2)' : 'rgba(212,255,0,0.2)'}`,
+              background: tradAct.status === 'failed'
+                ? 'rgba(248,113,113,0.08)'
+                : tradAct.status === 'pending'
+                  ? 'rgba(251,191,36,0.08)'
+                  : 'rgba(212,255,0,0.08)',
+              color: tradAct.status === 'failed'
+                ? '#f87171'
+                : tradAct.status === 'pending'
+                  ? '#fbbf24'
+                  : '#d4ff00',
+              border: `1px solid ${tradAct.status === 'failed'
+                ? 'rgba(248,113,113,0.2)'
+                : tradAct.status === 'pending'
+                  ? 'rgba(251,191,36,0.2)'
+                  : 'rgba(212,255,0,0.2)'}`,
             }}>
-              {tradAct.status === 'failed' ? '✗ TRADE' : '✓ TRADE'}
+              {tradAct.status === 'failed' ? '✗ TRADE' : tradAct.status === 'pending' ? '… TRADE' : '✓ TRADE'}
               {tradAct.tradeResult?.txHash ? ` · ${tradAct.tradeResult.txHash.slice(0, 6)}…` : ''}
             </span>
           )}
@@ -184,19 +232,19 @@ function ExecutionRow({ ev, idx, isNew }: { ev: TriggerEvent; idx: number; isNew
           )}
 
           
-          <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.6rem', color: '#2e3540', flexShrink: 0, whiteSpace: 'nowrap' }}>
+          <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.6rem', color: '#506070', flexShrink: 0, whiteSpace: 'nowrap' }}>
             {formatDistanceToNowStrict(ev.matchedAt)} ago
           </span>
 
         
           <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{ flexShrink: 0, transition: 'transform 0.2s', transform: expanded ? 'rotate(180deg)' : 'none' }}>
-            <path d="M2 3.5L5 6.5L8 3.5" stroke="#3d4452" strokeWidth="1.4" strokeLinecap="round"/>
+            <path d="M2 3.5L5 6.5L8 3.5" stroke="#5a6b7e" strokeWidth="1.4" strokeLinecap="round"/>
           </svg>
         </div>
 
         
         {!expanded && ev.explanation?.reason && (
-          <p style={{ fontSize: '0.72rem', color: '#3d4452', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingLeft: 17 }}>
+          <p style={{ fontSize: '0.72rem', color: '#5a6b7e', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingLeft: 17 }}>
             {ev.explanation.reason}
           </p>
         )}
@@ -207,7 +255,7 @@ function ExecutionRow({ ev, idx, isNew }: { ev: TriggerEvent; idx: number; isNew
         <div style={{ padding: '0 16px 14px', paddingLeft: 16 }}>
         
           {imp !== 'normal' && (
-            <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.58rem', fontWeight: 700, color: impColor ?? '#3d4452', letterSpacing: '0.1em', marginBottom: 8, opacity: 0.8 }}>
+            <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.58rem', fontWeight: 700, color: impColor ?? '#5a6b7e', letterSpacing: '0.1em', marginBottom: 8, opacity: 0.8 }}>
               {imp === 'critical' ? '● CRITICAL' : '◉ HIGH PRIORITY'}
             </div>
           )}
@@ -223,7 +271,7 @@ function ExecutionRow({ ev, idx, isNew }: { ev: TriggerEvent; idx: number; isNew
           {ev.explanation && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 8 }}>
               {ev.explanation.matchedFields.map(f => (
-                <span key={f} style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.6rem', padding: '2px 7px', borderRadius: 5, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)', color: '#3d4452' }}>{f}</span>
+                <span key={f} style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.6rem', padding: '2px 7px', borderRadius: 5, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)', color: '#5a6b7e' }}>{f}</span>
               ))}
               {(() => {
                 const cs = CONF_CFG[ev.explanation.confidence];
@@ -239,7 +287,7 @@ function ExecutionRow({ ev, idx, isNew }: { ev: TriggerEvent; idx: number; isNew
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '3px 16px', marginBottom: 8 }}>
               {Object.entries(ev.explanation.details).map(([k, v]) => (
                 <div key={k} style={{ display: 'flex', gap: 5, fontFamily: 'JetBrains Mono, monospace', fontSize: '0.62rem' }}>
-                  <span style={{ color: '#2e3540' }}>{k}:</span>
+                  <span style={{ color: '#506070' }}>{k}:</span>
                   <span style={{ color: '#5c6472', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{String(v)}</span>
                 </div>
               ))}
@@ -266,9 +314,9 @@ function ExecutionRow({ ev, idx, isNew }: { ev: TriggerEvent; idx: number; isNew
 
         
           <a href={`https://solscan.io/tx/${ev.signature}`} target="_blank" rel="noopener noreferrer"
-            style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.6rem', color: '#2e3540', textDecoration: 'none', transition: 'color 0.15s' }}
+            style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.6rem', color: '#506070', textDecoration: 'none', transition: 'color 0.15s' }}
             onMouseEnter={e => (e.currentTarget.style.color='#5c6472')}
-            onMouseLeave={e => (e.currentTarget.style.color='#2e3540')}>
+            onMouseLeave={e => (e.currentTarget.style.color='#506070')}>
             {shorten(ev.signature, 16)} ↗
           </a>
         </div>
@@ -288,12 +336,12 @@ export default function TriggerFeed({ events, onClear }: Props) {
         <style>{`@keyframes tf-bolt { 0%,100%{opacity:0.25;transform:scale(1)} 50%{opacity:0.5;transform:scale(1.04)} }`}</style>
         <div style={{ width:52, height:52, borderRadius:14, background:'rgba(255,255,255,0.02)', border:'1px solid rgba(255,255,255,0.06)', display:'flex', alignItems:'center', justifyContent:'center', animation:'tf-bolt 3s ease-in-out infinite' }}>
           <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
-            <path d="M12 2L6.5 11H10.5L9.5 20L16 9.5H12L12 2Z" stroke="#2e3540" strokeWidth="1.4" strokeLinejoin="round"/>
+            <path d="M12 2L6.5 11H10.5L9.5 20L16 9.5H12L12 2Z" stroke="#506070" strokeWidth="1.4" strokeLinejoin="round"/>
           </svg>
         </div>
         <div style={{ textAlign:'center' }}>
-          <p style={{ fontFamily:'Bebas Neue,sans-serif', fontSize:'1rem', letterSpacing:'0.1em', color:'#2e3540', marginBottom:4 }}>NO EXECUTIONS YET</p>
-          <p style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.62rem', color:'#1a2030' }}>Automations watching Solana mainnet in real-time</p>
+          <p style={{ fontFamily:'Bebas Neue,sans-serif', fontSize:'1rem', letterSpacing:'0.1em', color:'#506070', marginBottom:4 }}>NO EXECUTIONS YET</p>
+          <p style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.62rem', color:'#4a5a6e' }}>Automations watching Solana mainnet in real-time</p>
         </div>
       </div>
     );
@@ -323,13 +371,13 @@ export default function TriggerFeed({ events, onClear }: Props) {
           <span style={{ fontFamily:'Bebas Neue,sans-serif', fontSize:'0.9rem', letterSpacing:'0.08em', color:'#8a939f' }}>
             {events.length} EXECUTION{events.length !== 1 ? 'S' : ''}
           </span>
-          <span style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.62rem', color:'#2e3540' }}>
+          <span style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.62rem', color:'#506070' }}>
             · click to expand
           </span>
         </div>
-        <button onClick={onClear} style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.62rem', color:'#2e3540', background:'none', border:'none', cursor:'pointer', padding:'4px 8px', borderRadius:6, transition:'all 0.15s', letterSpacing:'0.04em' }}
+        <button onClick={onClear} style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.62rem', color:'#506070', background:'none', border:'none', cursor:'pointer', padding:'4px 8px', borderRadius:6, transition:'all 0.15s', letterSpacing:'0.04em' }}
           onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color='#8a939f'; (e.currentTarget as HTMLButtonElement).style.background='rgba(255,255,255,0.04)'; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color='#2e3540'; (e.currentTarget as HTMLButtonElement).style.background='none'; }}>
+          onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color='#506070'; (e.currentTarget as HTMLButtonElement).style.background='none'; }}>
           clear all
         </button>
       </div>
