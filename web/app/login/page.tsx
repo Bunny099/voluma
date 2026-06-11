@@ -142,7 +142,7 @@ export default function LoginPage() {
         {/* Divider */}
         <div style={{ display:'flex', alignItems:'center', gap:12, margin:'24px 0 20px' }}>
           <div style={{ flex:1, height:1, background:'rgba(255,255,255,0.06)' }} />
-          <span style={{ fontFamily:'JetBrains Mono, monospace', fontSize:'0.58rem', color:'#252d38', letterSpacing:'0.1em' }}>
+          <span style={{ fontFamily:'JetBrains Mono, monospace', fontSize:'0.58rem', color:'#e8ecf0', letterSpacing:'0.1em' }}>
             SECURE · ENCRYPTED · SOLANA
           </span>
           <div style={{ flex:1, height:1, background:'rgba(255,255,255,0.06)' }} />
@@ -176,7 +176,7 @@ export default function LoginPage() {
           marginTop:   22,
           fontFamily:  'JetBrains Mono, monospace',
           fontSize:    '0.62rem',
-          color:       '#2e3540',
+          color:       '#e8ecf0',
           textDecoration: 'none',
           letterSpacing: '0.06em',
           transition:  'color 0.15s',

@@ -235,12 +235,12 @@ export default function LandingPage() {
         .lp-cta-actions{display:flex;justify-content:center;gap:12px;flex-wrap:wrap;position:relative;z-index:1}
         .lp-footer{padding:1.8rem 4rem;border-top:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;justify-content:space-between}
         .lp-footer-brand{display:flex;align-items:center;gap:10px;text-decoration:none}
-        .lp-footer-name{font-family:'Bebas Neue',sans-serif;font-size:1.1rem;letter-spacing:0.08em;color:#3d4452}
+        .lp-footer-name{font-family:'Bebas Neue',sans-serif;font-size:1.1rem;letter-spacing:0.08em;color:#e8ecf0}
         .lp-footer-copy{font-size:0.73rem;color:#8a939f}
         .lp-footer-links{display:flex;align-items:center;gap:14px;flex-wrap:wrap;justify-content:center}
         .lp-footer-link{font-size:0.73rem;color:#c4ccd6;text-decoration:none;font-weight:600;transition:color 0.15s}
         .lp-footer-link:hover{color:#d4ff00}
-        .lp-footer-status{display:flex;align-items:center;gap:6px;font-size:0.72rem;color:#2e3540;font-family:'JetBrains Mono',monospace}
+        .lp-footer-status{display:flex;align-items:center;gap:6px;font-size:0.72rem;color:#c4ccd6;font-family:'JetBrains Mono',monospace}
         .lp-footer-dot{width:6px;height:6px;border-radius:50%;background:#d4ff00;opacity:0.4}
         .lp-rule{border:none;border-top:1px solid rgba(255,255,255,0.06);margin:0}
         @keyframes lp-fadeup{from{opacity:0;transform:translateY(22px)}to{opacity:1;transform:translateY(0)}}
