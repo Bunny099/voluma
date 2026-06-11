@@ -19,11 +19,8 @@
   "dependencies": {
     "@fastify/cors": "^11.2.0",
     "@fastify/rate-limit": "^10.0.0",
-    "@prisma/adapter-pg": "^7.8.0",
-    "@prisma/client": "^7.8.0",
     "@solana/spl-token": "^0.4.14",
     "@solana/web3.js": "^1.98.4",
-    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.8.0",
     "@types/ws": "^8.18.1",
     "axios": "^1.15.0",
