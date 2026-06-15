@@ -5,14 +5,19 @@ import { formatDistanceToNowStrict }             from 'date-fns';
 interface LiveEvent {
   signature:  string;
   eventType:  'SWAP' | 'TRANSFER' | 'UNKNOWN';
+  direction:  'BUY' | 'SELL' | 'TRANSFER' | 'SWAP' | 'UNKNOWN';
   tokenMint?: string;
+  tokenSymbol?: string;
+  amountUi?: number;
+  amountSol?: number;
+  confidence?: 'EXACT' | 'HIGH' | 'MEDIUM' | 'LOW';
   timestamp:  number;
 }
 
 const TYPE_CFG = {
   SWAP:     { label: 'SWAP',     color: '#818cf8', dim: 'rgba(129,140,248,0.1)' },
   TRANSFER: { label: 'TRANSFER', color: '#38bdf8', dim: 'rgba(56,189,248,0.1)'  },
-  UNKNOWN:  { label: 'TX',       color: '#3d4452', dim: 'rgba(61,68,82,0.1)'    },
+  UNKNOWN:  { label: 'TX',       color: '#5a6b7e', dim: 'rgba(61,68,82,0.1)'    },
 } as const;
 
 type Filter = 'ALL' | 'SWAP' | 'TRANSFER' | 'UNKNOWN';
@@ -95,8 +100,8 @@ export default function EventFeed({ events, triggeredSigs }: Props) {
                   )}
                 </div>
                 <div>
-                  <div style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.58rem', fontWeight:700, color: node.active ? '#8a939f' : '#2e3540', letterSpacing:'0.08em' }}>{node.label}</div>
-                  <div style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.54rem', color:'#2e3540', letterSpacing:'0.04em' }}>{node.sub}</div>
+                  <div style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.58rem', fontWeight:700, color: node.active ? '#8a939f' : '#506070', letterSpacing:'0.08em' }}>{node.label}</div>
+                  <div style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.54rem', color:'#506070', letterSpacing:'0.04em' }}>{node.sub}</div>
                 </div>
               </div>
               {i < arr.length - 1 && (
@@ -127,7 +132,7 @@ export default function EventFeed({ events, triggeredSigs }: Props) {
                 fontSize:'0.62rem', fontWeight:700,
                 letterSpacing:'0.06em',
                 background: filter === f ? 'rgba(255,255,255,0.08)' : 'transparent',
-                color:      filter === f ? '#e8ecf0' : '#3d4452',
+                color:      filter === f ? '#e8ecf0' : '#5a6b7e',
                 transition:'all 0.15s',
               }}>{f}</button>
             ))}
@@ -152,7 +157,7 @@ export default function EventFeed({ events, triggeredSigs }: Props) {
           )}
 
          
-          <span style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.6rem', color:'#2e3540', letterSpacing:'0.04em' }}>
+          <span style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.6rem', color:'#506070', letterSpacing:'0.04em' }}>
             {filtered.length}/{events.length}
           </span>
 
@@ -162,7 +167,7 @@ export default function EventFeed({ events, triggeredSigs }: Props) {
             padding:'4px 10px', borderRadius:7,
             border:`1px solid ${paused ? 'rgba(251,191,36,0.25)' : 'rgba(255,255,255,0.08)'}`,
             background: paused ? 'rgba(251,191,36,0.08)' : 'rgba(255,255,255,0.03)',
-            color: paused ? '#fbbf24' : '#3d4452',
+            color: paused ? '#fbbf24' : '#5a6b7e',
             cursor:'pointer',
             fontFamily:'JetBrains Mono,monospace',
             fontSize:'0.62rem', fontWeight:600,
@@ -194,16 +199,16 @@ export default function EventFeed({ events, triggeredSigs }: Props) {
             display:'flex', alignItems:'center', justifyContent:'center',
           }}>
             <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-              <circle cx="9" cy="9" r="3.5" stroke="#2e3540" strokeWidth="1.3"/>
-              <circle cx="9" cy="9" r="7" stroke="#1a2030" strokeWidth="1"/>
+              <circle cx="9" cy="9" r="3.5" stroke="#506070" strokeWidth="1.3"/>
+              <circle cx="9" cy="9" r="7" stroke="#4a5a6e" strokeWidth="1"/>
             </svg>
           </div>
           <div style={{ textAlign:'center' }}>
-            <p style={{ fontFamily:'Bebas Neue,sans-serif', fontSize:'0.9rem', letterSpacing:'0.1em', color:'#2e3540', marginBottom:4 }}>
+            <p style={{ fontFamily:'Bebas Neue,sans-serif', fontSize:'0.9rem', letterSpacing:'0.1em', color:'#506070', marginBottom:4 }}>
               {events.length === 0 ? 'AWAITING CHAIN EVENTS' : `NO ${filter} EVENTS`}
             </p>
             {events.length === 0 && (
-              <p style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.62rem', color:'#1a2030' }}>
+              <p style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.62rem', color:'#4a5a6e' }}>
                 Connected · Solana mainnet · Public WebSocket
               </p>
             )}
@@ -224,7 +229,7 @@ export default function EventFeed({ events, triggeredSigs }: Props) {
               <span key={h} style={{
                 fontFamily:'JetBrains Mono,monospace',
                 fontSize:'0.58rem', fontWeight:700,
-                color:'#2e3540', letterSpacing:'0.1em',
+                color:'#506070', letterSpacing:'0.1em',
                 textTransform:'uppercase' as const,
                 textAlign: i === 3 ? 'right' : 'left',
               }}>{h}</span>
@@ -236,6 +241,10 @@ export default function EventFeed({ events, triggeredSigs }: Props) {
             const condName = triggeredSigs.get(ev.signature);
             const triggered = condName !== undefined;
             const isNew     = i === 0 && !paused;
+            const typeLabel = ev.direction && ev.direction !== 'UNKNOWN'
+              ? ev.direction
+              : cfg.label;
+            const tokenLabel = ev.tokenSymbol ?? (ev.tokenMint ? shorten(ev.tokenMint, 6) : '—');
 
             return (
               <div
@@ -254,7 +263,7 @@ export default function EventFeed({ events, triggeredSigs }: Props) {
                 <div style={{ display:'flex', alignItems:'center', gap:6 }}>
                   <div style={{ width:5, height:5, borderRadius:'50%', background:cfg.color, flexShrink:0 }} />
                   <span style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.62rem', fontWeight:700, color:cfg.color, letterSpacing:'0.04em' }}>
-                    {cfg.label}
+                    {typeLabel}
                   </span>
                   {triggered && <span style={{ fontSize:'0.58rem', color:'#d4ff00' }}>⚡</span>}
                 </div>
@@ -268,7 +277,7 @@ export default function EventFeed({ events, triggeredSigs }: Props) {
                     style={{
                       fontFamily:'JetBrains Mono,monospace',
                       fontSize:'0.68rem',
-                      color: triggered ? '#d4ff00' : '#3d4452',
+                      color: triggered ? '#d4ff00' : '#5a6b7e',
                       textDecoration:'none',
                       display:'block',
                       overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap',
@@ -279,6 +288,16 @@ export default function EventFeed({ events, triggeredSigs }: Props) {
                   >
                     {shorten(ev.signature, 12)}
                   </a>
+                  {ev.confidence && (
+                    <div style={{
+                      fontFamily:'JetBrains Mono,monospace',
+                      fontSize:'0.55rem',
+                      color: ev.confidence === 'EXACT' ? '#d4ff00' : ev.confidence === 'HIGH' ? '#8a939f' : '#5a6b7e',
+                      marginTop:1,
+                    }}>
+                      {ev.confidence}
+                    </div>
+                  )}
                   {triggered && condName && (
                     <div style={{
                       fontFamily:'JetBrains Mono,monospace',
@@ -293,12 +312,12 @@ export default function EventFeed({ events, triggeredSigs }: Props) {
                 </div>
 
              
-                <div style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.62rem', color:'#2e3540', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                  {ev.tokenMint ? shorten(ev.tokenMint, 6) : '—'}
+                <div style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.62rem', color:'#506070', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                  {tokenLabel}
                 </div>
 
             
-                <div style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.62rem', color:'#2e3540', textAlign:'right', whiteSpace:'nowrap' }}>
+                <div style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.62rem', color:'#506070', textAlign:'right', whiteSpace:'nowrap' }}>
                   {formatDistanceToNowStrict(ev.timestamp)}
                 </div>
               </div>

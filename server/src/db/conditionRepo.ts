@@ -1,60 +1,84 @@
-import db from './db';
+import pool               from './pool';
 import { type Condition } from '../conditions/types';
 
-interface ConditionRow {
-  id:             string;
-  userId:         string;
-  data:           string;
-  executionCount: number;
-  createdAt:      number;
-}
 
-const stmts = {
-  insert: db.prepare(`
-    INSERT OR IGNORE INTO conditions (id, userId, data, executionCount, createdAt)
-    VALUES (@id, @userId, @data, 0, @createdAt)
-  `),
-  updateData:        db.prepare(`UPDATE conditions SET data = ? WHERE id = ?`),
-  get:               db.prepare(`SELECT * FROM conditions WHERE id = ?`),
-  getByUser:         db.prepare(`SELECT * FROM conditions WHERE userId = ?`),
-  getAll:            db.prepare(`SELECT * FROM conditions`),
-  delete:            db.prepare(`DELETE FROM conditions WHERE id = ?`),
-  incrementExecCount: db.prepare(`UPDATE conditions SET executionCount = executionCount + 1 WHERE id = ?`),
-  getExecCount:      db.prepare(`SELECT executionCount FROM conditions WHERE id = ?`),
-};
-
-function parse(row: ConditionRow): Condition {
-  return JSON.parse(row.data) as Condition;
+function parseData(raw: unknown): Condition {
+  return (typeof raw === 'string' ? JSON.parse(raw) : raw) as Condition;
 }
 
 export const conditionRepo = {
-  save(condition: Condition): void {
-    const existing = stmts.get.get(condition.id) as ConditionRow | undefined;
-    if (existing) {
-      stmts.updateData.run(JSON.stringify(condition), condition.id);
-    } else {
-      stmts.insert.run({ id: condition.id, userId: condition.userId, data: JSON.stringify(condition), createdAt: condition.createdAt });
-    }
+  async save(condition: Condition): Promise<void> {
+    await pool.query(
+      `INSERT INTO conditions (id, user_id, data, execution_count, created_at)
+       VALUES ($1, $2, $3, 0, NOW())
+       ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`,
+      [condition.id, condition.userId, JSON.stringify(condition)],
+    );
   },
-  get(id: string): Condition | null {
-    const row = stmts.get.get(id) as ConditionRow | undefined;
-    return row ? parse(row) : null;
+
+  async get(id: string): Promise<Condition | null> {
+    const { rows } = await pool.query(
+      `SELECT data FROM conditions WHERE id = $1`,
+      [id],
+    );
+    return rows[0] ? parseData(rows[0].data) : null;
   },
-  getByUserId(userId: string): Array<Condition & { executionCount: number }> {
-    const rows = stmts.getByUser.all(userId) as ConditionRow[];
-    return rows.map(r => ({ ...parse(r), executionCount: r.executionCount }));
+
+ 
+  async getByUserId(userId: string): Promise<Array<Condition & { executionCount: number }>> {
+    const { rows } = await pool.query(
+      `SELECT data, execution_count FROM conditions WHERE user_id = $1`,
+      [userId],
+    );
+    return rows.map(r => ({
+      ...parseData(r.data),
+      executionCount: r.execution_count as number,
+    }));
   },
-  getAll(): Condition[] {
-    return (stmts.getAll.all() as ConditionRow[]).map(parse);
+
+  async getAll(): Promise<Condition[]> {
+    const { rows } = await pool.query(`SELECT data FROM conditions`);
+    return rows.map(r => parseData(r.data));
   },
-  delete(id: string): void {
-    stmts.delete.run(id);
+
+  async delete(id: string): Promise<void> {
+    await pool.query(`DELETE FROM conditions WHERE id = $1`, [id]);
   },
-  incrementExecutionCount(id: string): void {
-    stmts.incrementExecCount.run(id);
+
+  async incrementExecutionCount(id: string): Promise<void> {
+    await pool.query(
+      `UPDATE conditions SET execution_count = execution_count + 1 WHERE id = $1`,
+      [id],
+    );
   },
-  getExecutionCount(id: string): number {
-    const row = stmts.getExecCount.get(id) as { executionCount: number } | undefined;
-    return row?.executionCount ?? 0;
+
+
+  async incrementIfUnderLimit(id: string, limit: number): Promise<boolean> {
+    const { rows } = await pool.query(
+      `UPDATE conditions
+       SET execution_count = execution_count + 1
+       WHERE id = $1 AND execution_count < $2
+       RETURNING execution_count`,
+      [id, limit],
+    );
+    return rows.length > 0;
+  },
+
+  async getExecutionCount(id: string): Promise<number> {
+    const { rows } = await pool.query(
+      `SELECT execution_count FROM conditions WHERE id = $1`,
+      [id],
+    );
+    return (rows[0]?.execution_count as number | undefined) ?? 0;
+  },
+
+ 
+  async getManyExecutionCounts(ids: string[]): Promise<Map<string, number>> {
+    if (!ids.length) return new Map();
+    const { rows } = await pool.query(
+      `SELECT id, execution_count FROM conditions WHERE id = ANY($1)`,
+      [ids],
+    );
+    return new Map(rows.map(r => [r.id as string, r.execution_count as number]));
   },
 };

@@ -12,7 +12,18 @@ interface Stats {
   dropRate:         number;
   totalExecutions:  number;
   failedExecutions: number;
+  pendingExecutions: number;
   tradeSuccessRate: number;
+  rpc: {
+    activeProvider: {
+      label: string;
+      recentFailures: number;
+      reconnectCount: number;
+      lastSuccessfulSlot: number | null;
+    };
+    degradedMode: boolean;
+    healthState: 'HEALTHY' | 'DEGRADED' | 'FALLBACK';
+  };
 }
 
 const BASE = () => process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
@@ -71,7 +82,7 @@ function MetricRow({ label, value, warn }: { label: string; value: string; warn?
       <span style={{
         fontFamily: 'JetBrains Mono, monospace',
         fontSize: '0.6rem',
-        color: '#2e3540',
+        color: '#506070',
         letterSpacing: '0.04em',
       }}>
         {label}
@@ -101,7 +112,7 @@ export default function SystemStats() {
   if (loading) {
     return (
       <div style={{ padding:'4px 0' }}>
-        <p style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.58rem', color:'#2e3540', letterSpacing:'0.12em', textTransform:'uppercase' as const, marginBottom:10 }}>
+        <p style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.58rem', color:'#506070', letterSpacing:'0.12em', textTransform:'uppercase' as const, marginBottom:10 }}>
           METRICS
         </p>
         {[0,1,2,3,4].map(i => (
@@ -119,20 +130,25 @@ export default function SystemStats() {
   if (!stats) {
     return (
       <div style={{ padding:'4px 0' }}>
-        <p style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.6rem', color:'#1a2030' }}>Connecting…</p>
+        <p style={{ fontFamily:'JetBrains Mono,monospace', fontSize:'0.6rem', color:'#4a5a6e' }}>Connecting…</p>
       </div>
     );
   }
 
   const successPct = stats.totalExecutions > 0 ? `${(stats.tradeSuccessRate * 100).toFixed(0)}%` : '—';
   const dropPct    = stats.dropRate > 0 ? `${(stats.dropRate * 100).toFixed(1)}%` : '0%';
+  const rpcState = stats.rpc.healthState === 'FALLBACK'
+    ? 'fallback'
+    : stats.rpc.healthState === 'DEGRADED'
+      ? 'degraded'
+      : 'healthy';
 
   return (
     <div style={{ padding:'4px 0' }}>
       <p style={{
         fontFamily: 'JetBrains Mono, monospace',
         fontSize: '0.58rem',
-        color: '#2e3540',
+        color: '#506070',
         letterSpacing: '0.12em',
         textTransform: 'uppercase' as const,
         marginBottom: 10,
@@ -143,9 +159,15 @@ export default function SystemStats() {
         <MetricRow label="Automations" value={String(stats.activeConditions)} />
         <MetricRow label="Clients"    value={String(stats.wsConnections)} />
         <MetricRow label="Events"     value={fmt(stats.totalEvents)} />
+        <MetricRow label="RPC"        value={stats.rpc.activeProvider.label} warn={stats.rpc.degradedMode} />
+        <MetricRow label="RPC state"  value={rpcState} warn={stats.rpc.healthState !== 'HEALTHY'} />
+        <MetricRow label="Reconnects" value={String(stats.rpc.activeProvider.reconnectCount)} warn={stats.rpc.activeProvider.reconnectCount > 3} />
         <MetricRow label="Drop rate"  value={dropPct} warn={stats.dropRate > 0.01} />
         {stats.totalExecutions > 0 && (
           <MetricRow label="Action rate" value={successPct} warn={stats.tradeSuccessRate < 0.8} />
+        )}
+        {stats.pendingExecutions > 0 && (
+          <MetricRow label="Pending" value={String(stats.pendingExecutions)} warn />
         )}
         <MetricRow label="Uptime"     value={uptime(stats.uptimeSeconds)} />
       </div>

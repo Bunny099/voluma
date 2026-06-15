@@ -1,153 +1,172 @@
-import axios from 'axios';
 import {
-  Connection,
   Keypair,
   VersionedTransaction,
 } from '@solana/web3.js';
+import { RPCManager } from '../rpc/rpcManager';
+import { JupiterService, type JupiterRouteSummary } from './jupiter';
 
-const JUPITER_QUOTE      = 'https://api.jup.ag/swap/v1/quote';
-const JUPITER_SWAP       = 'https://api.jup.ag/swap/v1/swap';
-const SOL_MINT           = 'So11111111111111111111111111111111111111112';
-const LAMPORTS           = 1_000_000_000;
+const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const CONFIRM_TIMEOUT_MS = 30_000;
 
-function getJupiterHeaders(): Record<string, string> {
-  const apiKey = process.env.JUPITER_API_KEY ?? '';
-  return apiKey ? { 'x-api-key': apiKey } : {};
-}
-
 export interface TradeParams {
-  direction:   'BUY' | 'SELL';
-  tokenMint:   string;
+  direction: 'BUY' | 'SELL';
+  tokenMint: string;
   rawAmountIn: number;
   slippageBps: number;
 }
 
 export interface TradeResult {
-  success:         boolean;
-  txHash?:         string;
-  error?:          string;
-  inputMint:       string;
-  outputMint:      string;
-  amountIn:        number;
-  outAmount?:      number;
-  latencyMs:       number;
-  pending?:        boolean;
-  confirmErr?:     string;
+  success: boolean;
+  status: 'PENDING' | 'CONFIRMED' | 'FAILED';
+  txHash?: string;
+  error?: string;
+  inputMint: string;
+  outputMint: string;
+  amountIn: number;
+  outAmount?: number;
+  latencyMs: number;
+  confirmErr?: string;
+  quoteOutAmount?: number;
+  priceImpactPct?: number | null;
+  slippageBps: number;
+  routeSummary?: JupiterRouteSummary;
+  providerLabel?: string;
+  quoteFetchedAt?: number;
 }
 
-
 interface ConfirmResult {
-  confirmed: boolean;
-  err?:     string;
+  status: 'PENDING' | 'CONFIRMED' | 'FAILED';
+  err?: string;
 }
 
 export class TradeExecutor {
-  constructor(private readonly connection: Connection) {}
+  constructor(
+    private readonly rpcManager: RPCManager,
+    private readonly jupiterService: JupiterService,
+  ) {}
 
   async executeTrade(keypair: Keypair, params: TradeParams): Promise<TradeResult> {
-    const start      = Date.now();
-    const isBuy      = params.direction === 'BUY';
-    const inputMint  = isBuy ? SOL_MINT        : params.tokenMint;
+    const start = Date.now();
+    const isBuy = params.direction === 'BUY';
+    const inputMint = isBuy ? SOL_MINT : params.tokenMint;
     const outputMint = isBuy ? params.tokenMint : SOL_MINT;
-    const swapMode = 'ExactIn';
-    const amountIn = params.rawAmountIn;
+    const provider = this.rpcManager.getCurrentProvider();
 
     try {
-    
-      const jupiterHeaders = getJupiterHeaders();
-
-      const { data: quoteResponse } = await axios.get(JUPITER_QUOTE, {
-        params: {
-          inputMint,
-          outputMint,
-          amount:      amountIn,
-          slippageBps: params.slippageBps,
-          swapMode,
-        },
-        headers: jupiterHeaders,
-        timeout: 8_000,
+      const quote = await this.jupiterService.getValidatedQuote({
+        inputMint,
+        outputMint,
+        amount: params.rawAmountIn,
+        slippageBps: params.slippageBps,
       });
 
-      
-      const outAmount: number = Number(quoteResponse.outAmount ?? 0);
+      this.jupiterService.assertFresh(quote);
+      const swapTransaction = await this.jupiterService.buildSwapTransaction(
+        quote,
+        keypair.publicKey.toBase58(),
+      );
 
-      
-      const { data: { swapTransaction } } = await axios.post(JUPITER_SWAP, {
-        quoteResponse,
-        userPublicKey:             keypair.publicKey.toBase58(),
-        wrapAndUnwrapSol:          true,
-        prioritizationFeeLamports: 'auto',
-        dynamicComputeUnitLimit:   true,
-      }, {
-        timeout: 10_000,
-        headers: {
-          'Content-Type': 'application/json',
-          ...jupiterHeaders,
-        },
-      });
-
-  
       const tx = VersionedTransaction.deserialize(Buffer.from(swapTransaction, 'base64'));
       tx.sign([keypair]);
 
-      
-      const txHash = await this.connection.sendRawTransaction(tx.serialize(), {
-        skipPreflight: false,
-        maxRetries:    0,
-      });
+      let txHash: string;
+      try {
+        txHash = await this.rpcManager.getHttpConnection().sendRawTransaction(
+          tx.serialize(),
+          {
+            skipPreflight: false,
+            maxRetries: 0,
+          },
+        );
+      } catch (error: any) {
+        this.rpcManager.markProviderFailure(error?.message ?? 'send_failed');
+        return {
+          success: false,
+          status: 'FAILED',
+          error: error?.message ?? 'Trade send failed',
+          inputMint,
+          outputMint,
+          amountIn: params.rawAmountIn,
+          latencyMs: Date.now() - start,
+          quoteOutAmount: quote.outAmount,
+          priceImpactPct: quote.priceImpactPct,
+          slippageBps: params.slippageBps,
+          routeSummary: quote.routeSummary,
+          providerLabel: provider.label,
+          quoteFetchedAt: quote.fetchedAt,
+        };
+      }
 
       const confirm = await this.confirmWithTimeout(txHash);
+      if (confirm.status === 'CONFIRMED') {
+        this.rpcManager.markProviderSuccess(undefined, provider.id);
+      }
 
       return {
-        success:   true,  
+        success: confirm.status !== 'FAILED',
+        status: confirm.status,
         txHash,
         inputMint,
         outputMint,
-        amountIn,
-        outAmount,
+        amountIn: params.rawAmountIn,
+        outAmount: quote.outAmount,
         latencyMs: Date.now() - start,
-        pending:   !confirm.confirmed,
         confirmErr: confirm.err,
+        error: confirm.status === 'FAILED' ? confirm.err : undefined,
+        quoteOutAmount: quote.outAmount,
+        priceImpactPct: quote.priceImpactPct,
+        slippageBps: params.slippageBps,
+        routeSummary: quote.routeSummary,
+        providerLabel: provider.label,
+        quoteFetchedAt: quote.fetchedAt,
       };
-    } catch (err: any) {
+    } catch (error: any) {
       const message =
-        err?.response?.data?.error ??
-        err?.response?.data?.message ??
-        err?.message ??
+        error?.response?.data?.error ??
+        error?.response?.data?.message ??
+        error?.message ??
         'Trade execution failed';
 
-      console.error('[TradeExecutor] Failed:', {
-        direction: params.direction,
-        tokenMint: params.tokenMint,
-        amountIn,
-        error:     message,
-      });
-
       return {
-        success:   false,
-        error:     message,
+        success: false,
+        status: 'FAILED',
+        error: message,
         inputMint,
         outputMint,
-        amountIn,
+        amountIn: params.rawAmountIn,
         latencyMs: Date.now() - start,
+        slippageBps: params.slippageBps,
+        providerLabel: provider.label,
       };
     }
   }
 
   private async confirmWithTimeout(txHash: string): Promise<ConfirmResult> {
     const deadline = Date.now() + CONFIRM_TIMEOUT_MS;
+
     while (Date.now() < deadline) {
-      const status = await this.connection.getSignatureStatus(txHash, {
-        searchTransactionHistory: false,
-      });
-      const conf = status?.value?.confirmationStatus;
-      if (conf === 'confirmed' || conf === 'finalized') return { confirmed: true };
-      if (status?.value?.err)
-        return { confirmed: false, err: `On-chain failure: ${JSON.stringify(status.value.err)}` };
-      await new Promise(r => setTimeout(r, 1_200));
+      try {
+        const status = await this.rpcManager.getHttpConnection().getSignatureStatus(txHash, {
+          searchTransactionHistory: true,
+        });
+
+        const confirmation = status?.value?.confirmationStatus;
+        if (confirmation === 'confirmed' || confirmation === 'finalized') {
+          return { status: 'CONFIRMED' };
+        }
+        if (status?.value?.err) {
+          return {
+            status: 'FAILED',
+            err: `On-chain failure: ${JSON.stringify(status.value.err)}`,
+          };
+        }
+      } catch (error: any) {
+        this.rpcManager.markProviderFailure(error?.message ?? 'confirm_status_failed');
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 1_200));
     }
 
-    return { confirmed: false };
+    return { status: 'PENDING', err: 'Confirmation timed out' };
   }
 }

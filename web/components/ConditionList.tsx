@@ -231,11 +231,11 @@ function ConditionCard({ cond, onDelete, onToggle }: {
           style={{
             width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center',
             borderRadius: 6, background: 'transparent', border: 'none',
-            color: '#3d4452', cursor: 'pointer', fontSize: 14,
+            color: '#5a6b7e', cursor: 'pointer', fontSize: 14,
             transition: 'color 0.15s, background 0.15s', flexShrink: 0,
           }}
           onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color='#f87171'; (e.currentTarget as HTMLButtonElement).style.background='rgba(248,113,113,0.1)'; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color='#3d4452'; (e.currentTarget as HTMLButtonElement).style.background='transparent'; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color='#5a6b7e'; (e.currentTarget as HTMLButtonElement).style.background='transparent'; }}
         >
           ✕
         </button>
@@ -307,7 +307,7 @@ function ConditionCard({ cond, onDelete, onToggle }: {
           display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
           transition: 'border-color 0.3s',
         }}>
-          <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.62rem', color: '#3d4452' }}>
+          <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.62rem', color: '#5a6b7e' }}>
             cd <span style={{ color: '#5c6472' }}>{cond.cooldownSeconds}s</span>
           </span>
 
@@ -324,7 +324,7 @@ function ConditionCard({ cond, onDelete, onToggle }: {
           )}
 
           {cond.lastTriggered && (
-            <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.62rem', color: '#2e3540' }}>
+            <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.62rem', color: '#506070' }}>
               {formatDistanceToNowStrict(cond.lastTriggered)} ago
             </span>
           )}
@@ -384,10 +384,10 @@ export default function ConditionList({ conditions, loading, onDelete, onToggle 
           <path d="M20 18H28M28 18V24" stroke="#d4ff00" strokeWidth="1.5" strokeLinecap="round" strokeDasharray="2 2"/>
         </svg>
         <div>
-          <p style={{ fontFamily:'Bebas Neue,sans-serif', fontSize:'1.1rem', letterSpacing:'0.06em', color:'#3d4452', marginBottom:4 }}>
+          <p style={{ fontFamily:'Bebas Neue,sans-serif', fontSize:'1.1rem', letterSpacing:'0.06em', color:'#5a6b7e', marginBottom:4 }}>
             NO AUTOMATIONS
           </p>
-          <p style={{ fontSize:'0.75rem', color:'#252d38' }}>Deploy your first pipeline below</p>
+          <p style={{ fontSize:'0.75rem', color:'#4a5a6e' }}>Deploy your first pipeline below</p>
         </div>
       </div>
     );

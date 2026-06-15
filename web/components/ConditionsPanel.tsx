@@ -60,14 +60,14 @@ export default function ConditionsPanel({ userId, latestTriggerKey }: Props) {
             onClick={refetch}
             style={{
               fontFamily:'JetBrains Mono,monospace',
-              fontSize:'0.62rem', color:'#3d4452',
+              fontSize:'0.62rem', color:'#5a6b7e',
               background:'none', border:'none', cursor:'pointer',
               display:'flex', alignItems:'center', gap:4,
               transition:'color 0.15s',
               letterSpacing:'0.04em',
             }}
             onMouseEnter={e => (e.currentTarget.style.color='#8a939f')}
-            onMouseLeave={e => (e.currentTarget.style.color='#3d4452')}
+            onMouseLeave={e => (e.currentTarget.style.color='#5a6b7e')}
           >
             ↻ refresh
           </button>
@@ -93,7 +93,7 @@ export default function ConditionsPanel({ userId, latestTriggerKey }: Props) {
             transform:'translate(-50%,-50%)',
             fontFamily:'JetBrains Mono,monospace',
             fontSize:'0.6rem', letterSpacing:'0.14em',
-            color:'#2e3540', background:'#080e18',
+            color:'#506070', background:'#080e18',
             padding:'0 12px',
           }}>NEW AUTOMATION</span>
         </div>

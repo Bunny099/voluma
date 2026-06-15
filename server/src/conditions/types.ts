@@ -23,7 +23,7 @@ export interface Condition {
   type:            ConditionType;
   enabled:         boolean;
   wallet?:         string;
-  transactionType?: 'BUY' | 'SELL' | 'TRANSFER' | 'ANY';
+  transactionType?: 'BUY' | 'SELL' | 'SWAP' | 'TRANSFER' | 'ANY';
   minAmountSol?:   number;
   tokenMint?:      string;
   minSwaps?:       number;

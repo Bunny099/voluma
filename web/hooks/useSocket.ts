@@ -1,21 +1,30 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
+import { authClient }                  from '@/lib/auth-client';
 
 export type ErrorType =
   | 'timeout' | 'network' | 'bad_request'
-  | 'server_error' | 'invalid_url' | 'trade_error' | 'no_wallet' | 'no_balance';
+  | 'server_error' | 'invalid_url' | 'trade_error' | 'no_wallet' | 'no_balance' | 'guard_rejected';
 
 export interface TradeResultPayload {
-  txHash?:    string;
-  inputMint:  string;
+  status: 'PENDING' | 'CONFIRMED' | 'FAILED';
+  txHash?: string;
+  inputMint: string;
   outputMint: string;
-  amountIn:   number;
-  latencyMs:  number;
+  amountIn: number;
+  outAmount?: number;
+  quoteOutAmount?: number;
+  priceImpactPct?: number | null;
+  slippageBps?: number;
+  routeSummary?: unknown;
+  providerLabel?: string;
+  failureReason?: string;
+  latencyMs: number;
 }
 
 export interface ActionResult {
   type:            string;
-  status:          'success' | 'failed' | 'skipped';
+  status:          'success' | 'pending' | 'failed' | 'skipped';
   attempts:        number;
   durationMs:      number;
   error?:          string;
@@ -24,20 +33,25 @@ export interface ActionResult {
   tradeResult?:    TradeResultPayload;
 }
 
-export interface ExecutionSummary { total: number; success: number; failed: number; }
+export interface ExecutionSummary { total: number; success: number; pending: number; failed: number; }
 
 export interface TriggerExplanation {
   reason:        string;
   matchedFields: string[];
-  confidence:    'HIGH' | 'MEDIUM' | 'LOW';
+  confidence:    'EXACT' | 'HIGH' | 'MEDIUM' | 'LOW';
   details:       Record<string, unknown>;
 }
 
 export interface LiveEvent {
-  signature:  string;
-  eventType:  'SWAP' | 'TRANSFER' | 'UNKNOWN';
+  signature: string;
+  eventType: 'SWAP' | 'TRANSFER' | 'UNKNOWN';
+  direction: 'BUY' | 'SELL' | 'TRANSFER' | 'SWAP' | 'UNKNOWN';
   tokenMint?: string;
-  timestamp:  number;
+  tokenSymbol?: string;
+  amountUi?: number;
+  amountSol?: number;
+  confidence?: 'EXACT' | 'HIGH' | 'MEDIUM' | 'LOW';
+  timestamp: number;
 }
 
 export interface TriggerEvent {
@@ -46,9 +60,13 @@ export interface TriggerEvent {
   conditionType: string;
   signature:     string;
   eventType:     string;
+  direction?:    'BUY' | 'SELL' | 'TRANSFER' | 'SWAP' | 'UNKNOWN';
   wallet?:       string;
   tokenMint?:    string;
+  tokenSymbol?:  string;
   amount?:       number;
+  amountUi?:     number;
+  amountSol?:    number;
   matchedAt:     number;
   explanation?:  TriggerExplanation;
   execution?: {
@@ -57,7 +75,6 @@ export interface TriggerEvent {
     summary:    ExecutionSummary;
   };
 }
-
 
 export interface TradeToast {
   id:        string;
@@ -68,13 +85,38 @@ export interface TradeToast {
 }
 
 export interface PendingTxInfo {
-  txHash:    string;
-  status:    'PENDING' | 'CONFIRMED' | 'FAILED';
-  inputMint: string;
+  txHash:     string;
+  status:     'PENDING' | 'CONFIRMED' | 'FAILED';
+  inputMint:  string;
   outputMint: string;
-  amountIn:  number;
-  createdAt: number;
+  amountIn:   number;
+  createdAt:  number;
+  failureReason?: string | null;
 }
+
+export interface RPCProviderHealth {
+  id: string;
+  label: string;
+  isActive: boolean;
+  recentFailures: number;
+  reconnectCount: number;
+  consecutiveFailures: number;
+  lastFailureAt: number | null;
+  lastFailureReason: string | null;
+  lastSuccessfulSlot: number | null;
+}
+
+export interface SystemStatus {
+  timestamp: number;
+  rpc: {
+    activeProvider: RPCProviderHealth;
+    providers: RPCProviderHealth[];
+    degradedMode: boolean;
+    healthState: 'HEALTHY' | 'DEGRADED' | 'FALLBACK';
+  };
+}
+
+// ── Constants ─────────────────────────────────────────────────────────────────
 
 const MAX_LIVE_EVENTS    = 200;
 const MAX_TRIGGERS       = 100;
@@ -82,29 +124,40 @@ const MAX_TRIGGERED_SIGS = 500;
 const BASE_RECONNECT_MS  = 1_500;
 const MAX_RECONNECT_MS   = 30_000;
 
+// ── Hook ─────────────────────────────────────────────────────────────────────
+
 export function useSocket(userId: string) {
+
+  const { data: sessionData }  = authClient.useSession();
+  const sessionToken           = sessionData?.session?.token;
+
   const [connected,     setConnected]     = useState(false);
   const [liveEvents,    setLiveEvents]    = useState<LiveEvent[]>([]);
   const [triggers,      setTriggers]      = useState<TriggerEvent[]>([]);
   const [triggeredSigs, setTriggeredSigs] = useState<Map<string, string>>(new Map());
   const [pendingTxs,    setPendingTxs]    = useState<PendingTxInfo[]>([]);
   const [tradeToasts,   setTradeToasts]   = useState<TradeToast[]>([]);
+  const [systemStatus,  setSystemStatus]  = useState<SystemStatus | null>(null);
 
   const wsRef          = useRef<WebSocket | null>(null);
   const retryTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retryDelayRef  = useRef(BASE_RECONNECT_MS);
   const generationRef  = useRef(0);
 
+  
   const setLiveEventsRef    = useRef(setLiveEvents);
   const setTriggersRef      = useRef(setTriggers);
   const setTriggeredSigsRef = useRef(setTriggeredSigs);
   const setTradeToastsRef   = useRef(setTradeToasts);
   const setPendingTxsRef    = useRef(setPendingTxs);
- 
+
+  
   const onTradeSuccessRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
-    if (!userId) return;
+   
+    if (!userId || !sessionToken) return;
+    const currentSessionToken = sessionToken;
 
     if (retryTimerRef.current) {
       clearTimeout(retryTimerRef.current);
@@ -114,6 +167,7 @@ export function useSocket(userId: string) {
     generationRef.current += 1;
     const myGeneration = generationRef.current;
 
+  
     if (wsRef.current) {
       const old = wsRef.current;
       old.onopen    = null;
@@ -136,7 +190,6 @@ export function useSocket(userId: string) {
         timestamp: Date.now(),
       };
       setTradeToastsRef.current(prev => [entry, ...prev].slice(0, 10));
-      // Auto-dismiss after 6s
       setTimeout(() => {
         setTradeToastsRef.current(prev => prev.filter(t => t.id !== entry.id));
       }, 6_000);
@@ -151,7 +204,8 @@ export function useSocket(userId: string) {
 
       let ws: WebSocket;
       try {
-        ws = new WebSocket(`${base}/ws?userId=${encodeURIComponent(userId)}`);
+      
+        ws = new WebSocket(`${base}/ws?token=${encodeURIComponent(currentSessionToken)}`);
       } catch {
         scheduleReconnect();
         return;
@@ -168,7 +222,7 @@ export function useSocket(userId: string) {
       ws.onclose = (evt) => {
         if (generationRef.current !== myGeneration) return;
         setConnected(false);
-        if (evt.code === 1008) return;
+        if (evt.code === 1008) return; 
         scheduleReconnect();
       };
 
@@ -184,18 +238,15 @@ export function useSocket(userId: string) {
         try { msg = JSON.parse(evt.data as string); }
         catch { return; }
 
-      
         if (msg.type === 'LIVE_EVENT') {
           setLiveEventsRef.current(prev =>
-            [msg as unknown as LiveEvent, ...prev].slice(0, MAX_LIVE_EVENTS)
+            [msg as unknown as LiveEvent, ...prev].slice(0, MAX_LIVE_EVENTS),
           );
         }
 
-      
         if (msg.type === 'TRIGGER') {
           const trigger = msg as unknown as TriggerEvent;
           setTriggersRef.current(prev => [trigger, ...prev].slice(0, MAX_TRIGGERS));
-
           if (trigger.signature && trigger.conditionName) {
             setTriggeredSigsRef.current(prev => {
               if (prev.has(trigger.signature)) return prev;
@@ -210,58 +261,47 @@ export function useSocket(userId: string) {
           }
         }
 
-      
         if (msg.type === 'TRADE_SUCCESS') {
           if (onTradeSuccessRef.current) onTradeSuccessRef.current();
           const txHash = msg.txHash as string | undefined;
-          pushToast({
-            kind:    'success',
-            message: `Trade submitted${txHash ? '' : ' — no tx hash'}`,
-            txHash,
-          });
-         
+          pushToast({ kind: 'success', message: `Transaction confirmed${txHash ? '' : ' — no tx hash'}`, txHash });
           setPendingTxsRef.current(prev => prev.filter(t => t.txHash !== txHash));
         }
 
         if (msg.type === 'TRADE_FAILED') {
           if (onTradeSuccessRef.current) onTradeSuccessRef.current();
-          pushToast({
-            kind:    'error',
-            message: (msg.error as string) ?? 'Trade failed',
-          });
+          const txHash = msg.txHash as string | undefined;
+          setPendingTxsRef.current(prev => prev.filter(t => t.txHash !== txHash));
+          pushToast({ kind: 'error', message: (msg.error as string) ?? 'Trade failed', txHash });
         }
 
-     
         if (msg.type === 'TRADE_PENDING') {
           const txHash = msg.txHash as string;
           setPendingTxsRef.current(prev => {
             if (prev.some(t => t.txHash === txHash)) return prev;
             return [...prev, {
               txHash,
-              status:    'PENDING',
-              inputMint:  (msg.inputMint as string) ?? '',
+              status:     'PENDING',
+              inputMint:  (msg.inputMint  as string) ?? '',
               outputMint: (msg.outputMint as string) ?? '',
-              amountIn:   (msg.amountIn as number) ?? 0,
+              amountIn:   (msg.amountIn   as number) ?? 0,
               createdAt:  Date.now(),
+              failureReason: null,
             }];
           });
           if (onTradeSuccessRef.current) onTradeSuccessRef.current();
-          pushToast({
-            kind:    'pending',
-            message: 'Trade submitted — awaiting confirmation',
-            txHash,
-          });
+          pushToast({ kind: 'pending', message: 'Transaction submitted — awaiting confirmation', txHash });
         }
 
-        if (msg.type === 'TRADE_CONFIRMED') {
+        if (msg.type === 'TRADE_CONFIRMED' || msg.type === 'TRADE_SUCCESS') {
           const txHash = msg.txHash as string;
           setPendingTxsRef.current(prev => prev.filter(t => t.txHash !== txHash));
           if (onTradeSuccessRef.current) onTradeSuccessRef.current();
-          pushToast({
-            kind:    'success',
-            message: 'Trade confirmed on-chain',
-            txHash,
-          });
+          pushToast({ kind: 'success', message: 'Transaction confirmed on-chain', txHash });
+        }
+
+        if (msg.type === 'SYSTEM_STATUS') {
+          setSystemStatus(msg as unknown as SystemStatus);
         }
       };
     }
@@ -295,7 +335,7 @@ export function useSocket(userId: string) {
       }
       setConnected(false);
     };
-  }, [userId]);
+  }, [userId, sessionToken]); 
 
   const clearTriggers  = () => setTriggers([]);
   const dismissToast   = (id: string) => setTradeToasts(prev => prev.filter(t => t.id !== id));
@@ -311,6 +351,7 @@ export function useSocket(userId: string) {
     dismissToast,
     pendingTxs,
     clearPendingTx,
+    systemStatus,
     _onTradeSuccessRef: onTradeSuccessRef,
   };
 }

@@ -1,88 +1,112 @@
 import { WebSocketServer, WebSocket } from 'ws';
-import { IncomingMessage, Server as HTTPServer } from 'http';
-import { parse } from 'url';
+import { type IncomingMessage }       from 'http';
+import pool                           from '../db/pool';
 
+async function lookupSession(token: string): Promise<string | null> {
+  try {
+    const { rows } = await pool.query(
+      'SELECT * FROM session WHERE token = $1',
+      [token],
+    );
+    if (!rows[0]) return null;
+    const row       = rows[0];
+    const userId    = (row.userId    ?? row.user_id)    as string | undefined;
+    const expiresAt = (row.expiresAt ?? row.expires_at) as string | Date | undefined;
+    if (!userId) return null;
+    if (expiresAt && new Date(expiresAt) <= new Date()) return null;
+    return userId;
+  } catch (err: any) {
+    console.error('[WS Auth] Session lookup failed:', err.message);
+    return null;
+  }
+}
 
+// ── BroadcastServer ───────────────────────────────────────────────────────────
 export class BroadcastServer {
   private readonly wss: WebSocketServer;
-  private readonly rooms = new Map<string, Set<WebSocket>>();
+  private readonly userSockets = new Map<string, Set<WebSocket>>();
 
-  constructor(httpServer: HTTPServer) {
-    this.wss = new WebSocketServer({ server: httpServer, path: '/ws' });
-    this.setup();
+  constructor(server: import('http').Server) {
+    this.wss = new WebSocketServer({ server });
+    this.wss.on('connection', (ws, req) => { this.handleConnection(ws, req); });
   }
 
-  // ─── Setup ───────────────────────────────────────────────────────────────
+  // ── Connection handler ──────────────────────────────────────────────────────
+  private handleConnection(ws: WebSocket, req: IncomingMessage): void {
+    const url    = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+    const token  = url.searchParams.get('token') ?? '';
 
-  private setup(): void {
-    this.wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
-      const userId = this.parseUserId(req);
-      if (!userId) { ws.close(1008, 'missing userId'); return; }
+    if (!token) {
+      ws.close(1008, 'missing session token');
+      return;
+    }
 
-      // Join room
-      if (!this.rooms.has(userId)) this.rooms.set(userId, new Set());
-      this.rooms.get(userId)!.add(ws);
+  
+    lookupSession(token).then((userId) => {
+      if (!userId) {
+        ws.close(1008, 'invalid or expired session');
+        return;
+      }
 
-      this.send(ws, { type: 'connected', userId });
+      if (!this.userSockets.has(userId)) {
+        this.userSockets.set(userId, new Set());
+      }
+      this.userSockets.get(userId)!.add(ws);
 
-      // Keepalive
-      const ping = setInterval(() => {
+      console.info(`[WS] Connected  userId=${userId.slice(0, 8)}… total=${this.connectionCount}`);
+
+      const pingInterval = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) ws.ping();
-        else { clearInterval(ping); }
       }, 25_000);
 
-      ws.on('pong', () => { /* alive */ });
-
       ws.on('close', () => {
-        clearInterval(ping);
-        const room = this.rooms.get(userId);
-        if (room) {
-          room.delete(ws);
-          if (!room.size) this.rooms.delete(userId);
+        clearInterval(pingInterval);
+        const sockets = this.userSockets.get(userId);
+        if (sockets) {
+          sockets.delete(ws);
+          if (sockets.size === 0) this.userSockets.delete(userId);
         }
+        console.info(`[WS] Disconnected userId=${userId.slice(0, 8)}… total=${this.connectionCount}`);
       });
 
-      ws.on('error', () => ws.terminate());
+      ws.on('error', (err) => {
+        console.warn(`[WS] Error userId=${userId.slice(0, 8)}…`, err.message);
+      });
+
+    }).catch((err) => {
+      console.error('[WS] Unexpected auth error:', err.message);
+      ws.close(1011, 'internal error');
     });
   }
 
-  // ─── Public API ──────────────────────────────────────────────────────────
-
- 
-  sendToUser(userId: string, payload: unknown): void {
-    const sockets = this.rooms.get(userId);
+  // ── Send to one user (all their tabs) ──────────────────────────────────────
+  sendToUser(userId: string, payload: object): void {
+    const sockets = this.userSockets.get(userId);
     if (!sockets?.size) return;
     const msg = JSON.stringify(payload);
     for (const ws of sockets) {
-      if (ws.readyState === WebSocket.OPEN) ws.send(msg);
-    }
-  }
-
-
-  broadcast(payload: unknown): void {
-    const msg = JSON.stringify(payload);
-    for (const sockets of this.rooms.values()) {
-      for (const ws of sockets) {
-        if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(msg, (err) => { if (err) console.warn('[WS] Send error:', err.message); });
       }
     }
   }
 
+  // ── Broadcast to ALL connected users (e.g. LIVE_EVENT feed) ─────────────────
+  broadcast(payload: object): void {
+    const msg = JSON.stringify(payload);
+    for (const sockets of this.userSockets.values()) {
+      for (const ws of sockets) {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(msg, (err) => { if (err) console.warn('[WS] Broadcast error:', err.message); });
+        }
+      }
+    }
+  }
+
+  // ── Total open connections ───────────────────────────────────────────────────
   get connectionCount(): number {
     let n = 0;
-    for (const s of this.rooms.values()) n += s.size;
+    for (const sockets of this.userSockets.values()) n += sockets.size;
     return n;
-  }
-
-  // ─── Helpers ─────────────────────────────────────────────────────────────
-
-  private parseUserId(req: IncomingMessage): string | null {
-    const { query } = parse(req.url ?? '', true);
-    const uid = query.userId;
-    return typeof uid === 'string' && uid.length > 0 ? uid : null;
-  }
-
-  private send(ws: WebSocket, payload: unknown): void {
-    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
   }
 }
