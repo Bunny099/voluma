@@ -1,12 +1,22 @@
 import { betterAuth } from 'better-auth';
 import { Pool }        from 'pg';
 
+console.log("AUTH FILE LOADED");
 
+const dbUrl = process.env.DATABASE_URL ?? "";
+
+console.log(
+  "DATABASE HOST:",
+  dbUrl.split("@")[1]?.split("/")[0]
+);
+
+console.log(
+  "NODE_ENV:",
+  process.env.NODE_ENV
+);
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined,
-  max: 5,
+  connectionString: process.env.DATABASE_URL
 });
 
 export const auth = betterAuth({
