@@ -9,7 +9,6 @@ RUN bun install --production
 COPY src/ ./src/
 COPY tsconfig.json ./
 
-EXPOSE 3001
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
   CMD curl -f http://localhost:3001/health || exit 1
