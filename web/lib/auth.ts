@@ -1,32 +1,14 @@
 import { betterAuth } from 'better-auth';
 import { Pool }        from 'pg';
 
-console.log("AUTH FILE LOADED");
 
-const dbUrl = process.env.DATABASE_URL ?? "";
-
-console.log(
-  "DATABASE HOST:",
-  dbUrl.split("@")[1]?.split("/")[0]
-);
-
-console.log(
-  "NODE_ENV:",
-  process.env.NODE_ENV
-);
+const dbUrl = new URL(process.env.DATABASE_URL!);
+dbUrl.searchParams.delete('sslmode');
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: dbUrl.toString(),
+  ssl: dbUrl.hostname.includes('localhost') ? undefined : { rejectUnauthorized: false },
 });
-
-pool
-  .query("SELECT NOW()")
-  .then(() => {
-    console.log("DB CONNECTION SUCCESS");
-  })
-  .catch((err) => {
-    console.error("DB CONNECTION FAILED", err);
-  });
 
 export const auth = betterAuth({
   database: pool,
