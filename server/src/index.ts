@@ -941,6 +941,14 @@ export async function bootstrap() {
     } catch (err: any) { return reply.send({ success: false, durationMs: Date.now() - start, error: err.message }); }
   });
 
+  app.get('/', async () => {
+  return {
+    service: 'Voluma API',
+    status: 'ok',
+    uptime: process.uptime(),
+  };
+});
+
   app.get('/health', async (_req, reply) => {
     return reply.send({
       status:        'ok',
