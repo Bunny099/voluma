@@ -1,8 +1,10 @@
 FROM oven/bun:1.1 AS base
 WORKDIR /app
+
 RUN apt-get update && apt-get install -y curl --no-install-recommends && rm -rf /var/lib/apt/lists/*
-COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile --production
+
+COPY package.json ./
+RUN bun install --production
 
 COPY src/ ./src/
 COPY tsconfig.json ./
