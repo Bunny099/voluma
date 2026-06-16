@@ -16,8 +16,17 @@ console.log(
 );
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL
+  connectionString: process.env.DATABASE_URL,
 });
+
+pool
+  .query("SELECT NOW()")
+  .then(() => {
+    console.log("DB CONNECTION SUCCESS");
+  })
+  .catch((err) => {
+    console.error("DB CONNECTION FAILED", err);
+  });
 
 export const auth = betterAuth({
   database: pool,
