@@ -269,20 +269,20 @@ export async function bootstrap() {
     serverFactory: (handler) => { httpServer.on('request', handler); return httpServer; },
   });
 
-  await app.register(cors, {
-    origin: (origin, cb) => {
-      const allowed = (process.env.FRONTEND_URL ?? 'http://localhost:3000').split(',').map(s => s.trim());
-      allowed.push('http://localhost:3000');
-      if (!origin || allowed.some(a => origin.startsWith(a))) {
-        cb(null, true);
-      } else {
-        cb(new Error(`CORS: origin ${origin} not allowed`), false);
-      }
-    },
-    methods:        ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-    credentials:    true,
-  });
+  const allowedOrigins = new Set(
+  (process.env.FRONTEND_URL ?? 'http://localhost:3000').split(',').map(s => s.trim())
+);
+if (process.env.NODE_ENV !== 'production') allowedOrigins.add('http://localhost:3000');
+
+await app.register(cors, {
+  origin: (origin, cb) => {
+    if (!origin || allowedOrigins.has(origin)) return cb(null, true);
+    cb(new Error('Not allowed by CORS'), false);
+  },
+  methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true,
+});
 
   await app.register(rateLimit, {
     global:   false,
