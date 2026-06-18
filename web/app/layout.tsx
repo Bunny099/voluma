@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import { Analytics } from "@vercel/analytics/next"
 
 export const metadata: Metadata = {
   title:       'Voluma',
@@ -33,6 +34,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         style={{ fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif" }}
       >
         {children}
+        <Analytics />
       </body>
     </html>
   );
