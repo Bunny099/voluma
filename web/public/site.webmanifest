@@ -1,0 +1,17 @@
+{
+  "name": "Voluma",
+  "short_name": "Voluma",
+  "description": "Real-time Solana trading automation",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#070b10",
+  "theme_color": "#d4ff00",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "48x48",
+      "type": "image/x-icon"
+    }
+   
+  ]
+}
