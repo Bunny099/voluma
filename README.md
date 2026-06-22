@@ -1,398 +1,200 @@
-# Voluma — On-Chain Automation Engine
+<div align="center">
 
-> Execute on-chain actions directly from live Solana activity — in seconds, not minutes.
+<img src="./web/public/og-image.png" alt="Voluma" width="100%" />
 
-On-chain signals emerge and disappear in seconds. By the time manual traders react, the opportunity is already gone.
+<br/>
 
-Voluma continuously ingests live Solana transactions and evaluates them in real time.
+### Real-time on-chain automation for Solana
 
-[![Solana](https://img.shields.io/badge/Solana-Mainnet-9945FF?style=flat&logo=solana)](https://solana.com)
-[![Jupiter](https://img.shields.io/badge/DEX-Jupiter%20v6-00B0D8?style=flat)](https://jup.ag)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Colosseum](https://img.shields.io/badge/Colosseum-Frontier%202026-orange)](https://colosseum.org)
+Define a condition. Voluma watches the chain. Your action fires the moment it matches — a notification, a webhook, or a live trade through Jupiter.
 
----
+<br/>
 
-## What is Voluma?
+[![Solana](https://img.shields.io/badge/Solana-Mainnet-9945FF?style=for-the-badge&logo=solana&logoColor=white)](https://solana.com)
+[![Jupiter](https://img.shields.io/badge/DEX-Jupiter%20v6-00B0D8?style=for-the-badge)](https://jup.ag)
+[![Status](https://img.shields.io/badge/status-live-d4ff00?style=for-the-badge&labelColor=070b10)](https://voluma.online)
+[![License](https://img.shields.io/badge/license-MIT-black?style=for-the-badge)](./LICENSE)
 
-Voluma is a **real-time on-chain automation engine for Solana**. It monitors the Solana blockchain as transactions happen, evaluates user-defined conditions against every transaction, and executes actions — including real BUY/SELL trades via Jupiter DEX — automatically, without human intervention.
+**[voluma.online](https://voluma.online)** · [Terms](https://voluma.online/terms) · [Privacy](https://voluma.online/privacy)
+</div>
 
-Voluma functions as an execution layer on top of Solana — connecting real-time on-chain signals directly to automated actions.
+<br/>
 
-It bridges the gap between on-chain data and execution — turning raw blockchain activity into actionable outcomes without manual intervention.
+## The problem
 
+Solana moves fast. A wallet starts accumulating, a token sees a sudden burst of swaps, a transfer crosses a size that matters — and the window to act on it is seconds, not minutes. By the time a human notices and reacts manually, the signal is already priced in.
 
----
+Voluma closes that gap. It holds a live connection to Solana mainnet, evaluates every relevant transaction against the automations you've defined, and executes the result automatically — including signing and submitting a real trade — without you watching a screen.
 
-## 🔁 Beyond Trading
+It's built as a general **condition → action** engine, not a single-purpose bot. Trading is the action that proves the loop end-to-end with a verifiable on-chain result; the same pipeline works just as well for alerting or webhook-driven workflows feeding other systems.
 
-Voluma's core is a general automation engine — not a trading bot.
+<br/>
 
-The condition evaluation pipeline, action dispatch system, and real-time feedback loop are designed to work with any on-chain signal and any action type. Trading is the sharpest initial use case because it proves the full loop end-to-end with verifiable on-chain results.
+<div align="center">
+<table>
+<tr>
+<td width="50%"><img src="./assets/screenshot-live-feed.png" alt="Live transaction feed" /><p align="center"><sub>Live Feed — every relevant mainnet transaction, in real time</sub></p></td>
+<td width="50%"><img src="./assets/screenshot-automation.png" alt="Automation builder" /><p align="center"><sub>Visual builder — WHEN this happens → THEN do that</sub></p></td>
+</tr>
+<tr>
+<td width="50%"><img src="./assets/screenshot-execution.png" alt="Execution history" /><p align="center"><sub>Executions — full explanation of why a condition fired</sub></p></td>
+<td width="50%"><img src="./assets/screenshot-wallet.png" alt="Wallet panel" /><p align="center"><sub>Wallet — encrypted custody and live balance</sub></p></td>
+</tr>
+</table>
+</div>
 
-The same infrastructure naturally extends to:
-- **Agent execution rails** — reliable triggers and stateful feedback for AI agents operating on Solana
-- **DAO operations** — treasury monitoring, governance signal detection, automatic alerts
-- **Protocol automation** — launch detection, liquidity events, anomaly response
-- **Developer workflows** — webhook-driven pipelines triggered directly by on-chain conditions
+<br/>
 
-Voluma sits at the seam between on-chain state changes and executable outcomes. Trading is where it starts. Execution middleware is where it goes.
+## How it works
 
----
+**1. Define a condition.** Wallet activity, a swap burst, a volume spike, or a large transfer — set the thresholds and an optional token filter through a visual builder. No code.
 
-## ⚡ Why this matters
+**2. Voluma watches the chain.** A persistent WebSocket subscription streams Solana mainnet activity. Every transaction is evaluated against your active conditions through an indexed matcher, not a linear scan.
 
-On-chain opportunities are short-lived.
-
-- Swap bursts last seconds  
-- Wallet activity happens instantly  
-- Volume spikes rise and disappear quickly  
-
-Most tools today:
-- notify too late  
-- require manual execution  
-- or need complex infrastructure  
-
-Even experienced traders cannot easily say:
-
-> *"When this wallet buys, execute a trade for me automatically."*
-
-Voluma enables this by directly connecting live on-chain signals to automated execution.
-
-Recent improvements in Solana's throughput and low-latency RPC streaming make it possible to react to on-chain activity in real time. Voluma is built to leverage that capability fully.
-
----
-
-## 🧠 How it works
-
-**1. Define a condition**  
-Choose a trigger like wallet activity, swap burst, volume spike, or large transfer.
-
-**2. Voluma listens to the chain**  
-Transactions stream in real time and are evaluated instantly.
-
-**3. Action executes automatically**  
-When a condition matches, Voluma triggers — notify, webhook, or execute a trade.
-
-This creates a continuous loop:
-
-Solana Event → Condition Evaluation → Action Execution → Real-time Feedback
-
-Voluma closes the loop between on-chain activity and execution.
-
----
-
-## 🔥 What makes Voluma different
-
-- **Closed-loop execution (signal → decision → action)**  
-  Voluma does not stop at detection. It evaluates conditions, executes trades, and confirms outcomes — completing the full automation loop in real time.
-
-- **Real-time processing**  
-  No polling. No delays. Direct reaction to live transaction flow.
-
-- **No setup friction**  
-  Open the dashboard, create a condition, and it starts immediately.
-
-- **Encrypted wallet storage**  
-  Each user has a dedicated trading wallet. Private keys are AES-256 encrypted at rest and decrypted only during trade execution.
-
-- **Built specifically for Solana**  
-  Native understanding of transaction logs and DEX activity.
-
----
-## The Problem
-
-Solana processes hundreds of thousands of transactions per day. Profitable signals — a whale moving tokens, a swap burst beginning, volume spiking on a token — last seconds, not minutes. By the time a trader manually spots a signal and executes, the opportunity is gone.
-
-Existing solutions either:
-- Require technical infrastructure to run bots (developers only)
-- Operate off-chain and poll data (introduces lag)
-- Don't support automated execution (alerts only, no action)
-- Don't exist on Solana at the right abstraction level
-
-**Voluma makes on-chain automation accessible to any trader in under 60 seconds.**
-
----
-
-## Demo
-
-> 📹 **[Watch the Demo Video →](https://youtu.be/4jbm5CBOQ0A)**
-
-> 🎤 **[Watch the Pitch Video →](https://youtu.be/Pj3oKvSct10)**
-
-### What the demo shows:
-1. Real Solana mainnet transactions streaming live into the dashboard
-2. Creating a visual automation pipeline (WHEN trigger → THEN action) in under 30 seconds
-3. A condition firing in real time when the chain meets the threshold
-4. An automated trade executing on Jupiter DEX with a verifiable transaction hash on Solscan
-
----
-
-## Screenshots
-
-| Live Feed | Automations |
-|-----------|-------------|
-| ![Live Feed](assets/screenshot-live-feed.png) | ![Automations](assets/screenshot-automation.png) |
-
-| Executions | Wallet |
-|------------|--------|
-| ![Executions](assets/screenshot-execution.png) | ![Wallet](assets/screenshot-wallet.png) |
-
----
-
-## How It Works
+**3. The action fires automatically.** A match dispatches its configured action: a dashboard push, a webhook with retries and idempotency headers, a server log, or a real BUY/SELL on Jupiter DEX — signed from your dedicated, encrypted trading wallet.
 
 ```
 Solana Mainnet (WebSocket)
-        │
-        ▼
-  Ingestion Layer
-  (log parsing, event normalization)
-        │
-        ▼
-  Condition Engine
-  (inverted index, sliding windows)
-        │
-        ▼
-  Execution Engine
-  (guard checks → Jupiter quote → on-chain tx)
-        │
-        ▼
-  WebSocket Broadcast
-  (real-time push to dashboard)
+         │
+         ▼
+  Ingestion Layer        →  parse, dedupe, selectively enrich, RPC failover
+         │
+         ▼
+  Condition Engine       →  indexed match, sliding windows, cooldowns
+         │
+         ▼
+  Execution Engine       →  retry policy, per-wallet locking, idempotency
+         │
+    ┌────┴─────┐
+    ▼          ▼
+Trade Executor   Realtime Broadcast
+(Jupiter DEX)    (per-user WebSocket rooms)
 ```
 
-This entire pipeline is live and running on Solana mainnet — from ingestion to execution.
+<br/>
 
-**Every transaction from monitored DEX programs and the System Program is evaluated in under 50ms.** No polling. No RPC spam. A single persistent WebSocket connection handles the entire ingestion pipeline.
+## What's actually in it
 
----
+**Four ways to watch the chain.** Wallet activity, swap bursts, volume spikes, and large transfers — each with its own matching logic, not a single generic "alert" type stretched four ways.
 
-## Core Features
+**Four ways to react.** Push notification, HTTP webhook (with retries, idempotency keys, and a delivery ID), a structured server log, or a real trade.
 
-### 4 Condition Types
+**Trades that are guarded, not just fired.** Every trade — automated or manual — passes through live balance checks, a price-impact cap, a quote-freshness check, per-user rate limiting, and per-wallet execution locking before a transaction is ever built. Three independent layers of idempotency mean the same on-chain event can never trigger the same trade twice.
 
-| Condition | What it Detects |
-|-----------|----------------|
-| **Wallet Activity** | Any transaction from a specific wallet address — buy, sell, or transfer |
-| **Swap Burst** | N or more swaps of a token within a sliding time window |
-| **Volume Spike** | Total SOL volume through a token exceeding a threshold in a time window |
-| **Large Transfer** | Any SOL transfer above a defined amount, across all of mainnet |
+**Wallets that are actually encrypted.** Each user gets a dedicated, server-held Solana keypair. Private keys are encrypted with AES-256-GCM using a per-wallet key derived via `scrypt` — not a shared static key. Exporting a key or withdrawing funds requires a short-lived, single-use verification step plus a typed confirmation, every time.
 
-### 4 Action Types
+**One ledger for every trade.** Whether a trade fired from a condition or was sent manually from the wallet panel, it lands in the same history view — confirmed, pending, or failed, with slippage, price impact, execution time, and a Solscan link, tagged by whether it was automated or manual.
 
-| Action | What it Does |
-|--------|-------------|
-| **Push Notify** | Real-time notification to dashboard via WebSocket |
-| **Webhook** | HTTP POST to any endpoint — integrates with Discord, Slack, custom systems |
-| **Server Log** | Structured JSON log entry for backend monitoring |
-| **Auto Trade** | Real BUY or SELL via Jupiter DEX aggregator, executed automatically |
+**Infrastructure that fails over instead of falling over.** RPC providers are health-tracked continuously; after a run of failures, ingestion automatically switches providers and reports its current state (`HEALTHY` / `DEGRADED` / `FALLBACK`) live to the dashboard.
 
-### Visual Pipeline Builder
-Conditions are built using a node-based visual UI — a [WHEN] trigger node connected to a [THEN] action node. No forms, no dropdowns, no confusion. The mental model is immediate.
+<br/>
 
-### Server-Side Encrypted Wallet System
-Voluma generates a dedicated trading keypair per user. Private keys are AES-256-CBC encrypted and stored in the database. The server decrypts keys only when executing trades or withdrawals, then signs transactions on behalf of the user. The encryption key is held separately in environment variables, protecting against database-only breaches.
+## Built with
 
-This design enables fully automated execution without requiring user interaction at trigger time.
+<div align="center">
 
-### Trade Safety (TradeGuard)
-Every automated trade passes through a multi-layer guard system before execution:
-- Per-user rate limiting (5 trades/minute max)
-- Live balance check against RPC
-- Token mint validation (base58 format check)
-- Execution count limits (once, N times, or unlimited)
-- Deduplication cache (same event cannot trigger two identical trades)
+![Next.js](https://img.shields.io/badge/Next.js-000000?style=flat-square&logo=nextdotjs&logoColor=white)
+![Fastify](https://img.shields.io/badge/Fastify-000000?style=flat-square&logo=fastify&logoColor=white)
+![Bun](https://img.shields.io/badge/Bun-000000?style=flat-square&logo=bun&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?style=flat-square&logo=postgresql&logoColor=white)
+![Supabase](https://img.shields.io/badge/Supabase-3FCF8E?style=flat-square&logo=supabase&logoColor=white)
+![Solana](https://img.shields.io/badge/Solana-9945FF?style=flat-square&logo=solana&logoColor=white)
+![Vercel](https://img.shields.io/badge/Vercel-000000?style=flat-square&logo=vercel&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat-square&logo=docker&logoColor=white)
 
----
+</div>
 
-## Architecture
+Auth runs on **Better Auth** with Google OAuth. RPC is **Helius** by default with a configurable secondary and a public-RPC fallback always in the chain. The web app deploys to **Vercel**; the server runs as a Docker container on **Railway**.
+
+<br/>
+
+## Repository
+
+<details>
+<summary><strong>Show full structure</strong></summary>
 
 ```
 voluma/
-├── server/                 # Fastify backend, Node.js + TypeScript + Bun
-│   └── src/
-│       ├── index.ts                    # Server bootstrap, all routes
-│       ├── ingestion/
-│       │   ├── provider.ts             # NormalizedEvent interface
-│       │   ├── public-rpc-provider.ts  # Mainnet WebSocket ingestion
-│       │   └── yellowstone-provider.ts # Helius gRPC stub (future)
-│       ├── conditions/
-│       │   ├── engine.ts               # Condition evaluator, inverted indexes
-│       │   └── types.ts                # Condition/Action type definitions
-│       ├── execution/
-│       │   ├── executor.ts             # Action dispatcher, retry logic
-│       │   ├── tradeExecutor.ts        # Jupiter DEX integration
-│       │   └── tradeGuard.ts           # Safety layer, rate limiting
-│       ├── wallets/
-│       │   └── walletManager.ts        # AES-256 keypair management
-│       ├── ws/
-│       │   └── broadcast.ts            # WebSocket room management
-│       ├── queue/
-│       │   └── in-memory-queue.ts      # Concurrent event processor
-│       └── db/
-│           ├── db.ts                   # SQLite + WAL mode, schema init
-│           ├── conditionRepo.ts        # Condition CRUD + execution count
-│           ├── statsRepo.ts            # Trigger statistics
-│           ├── walletRepo.ts           # Wallet record persistence
-│           ├── processedEventRepo.ts   # Deduplication cache (conditionId:signature)
-│           └── pendingTxRepo.ts        # Pending transaction tracking
-├── web/                    # Next.js 14 frontend, TypeScript
-│   └── app/
-│       ├── page.tsx                    # Landing page
-│       ├── dashboard/page.tsx          # Main dashboard
-│       ├── components/
-│       │   ├── ConditionBuilder.tsx    # Visual pipeline builder
-│       │   ├── ConditionList.tsx       # Active automations with live state
-│       │   ├── ConditionsPanel.tsx     # Container panel
-│       │   ├── EventFeed.tsx           # Live transaction stream
-│       │   ├── TriggerFeed.tsx         # Execution history
-│       │   ├── WalletPanel.tsx         # Wallet management + balance
-│       │   └── SystemStats.tsx         # Pipeline health metrics
-│       └── hooks/
-│           ├── useSocket.ts            # WebSocket client, reconnect logic
-│           ├── useConditions.ts        # Conditions CRUD
-│           ├── useWallet.ts            # Wallet state + trade callbacks
-│           └── useUserId.ts            # Browser-local identity
+├── README.md
+├── CONTRIBUTING.md
+├── LICENSE
+├── assets/                  # Screenshots used in this README
 │
-└── README.md               # This file
+├── server/                  # Fastify backend
+│   ├── src/
+│   │   ├── index.ts             # Bootstrap, routes, in-memory state
+│   │   ├── auth.ts              # Session validation
+│   │   ├── conditions/          # The matching engine
+│   │   ├── execution/           # Action dispatch + trade execution
+│   │   ├── wallets/             # Encrypted custody
+│   │   ├── security/            # Step-up verification
+│   │   ├── rpc/                 # Provider health + failover
+│   │   ├── ingestion/           # Live Solana ingestion
+│   │   ├── tokens/               # Mint → symbol resolution
+│   │   ├── ws/                  # Realtime broadcast
+│   │   ├── queue/                # Backpressure-aware event queue
+│   │   ├── lib/                  # TTL cache
+│   │   └── db/                   # Repository layer (Postgres)
+│   ├── migrations/
+│   └── README.md
+│
+└── web/                      # Next.js 15 frontend
+    ├── app/                     # Pages — landing, dashboard, login, legal
+    ├── components/              # Dashboard + landing UI
+    ├── hooks/                   # Socket, conditions, wallet state
+    ├── lib/                     # Better Auth client/server config
+    └── README.md
 ```
 
----
+</details>
 
-## Tech Stack
+See [`server/README.md`](./server/README.md) for the backend architecture and [`web/README.md`](./web/README.md) for the frontend.
 
-### Backend
-| Component | Technology | Why |
-|-----------|-----------|-----|
-| Runtime | Bun + Node.js | Fast startup, native TypeScript |
-| Framework | Fastify | Low overhead, schema validation |
-| Database | SQLite + better-sqlite3 | Zero infra, WAL mode, fast synchronous reads |
-| WebSocket | ws library | Direct control over connection lifecycle |
-| Blockchain | @solana/web3.js | Official Solana SDK |
-| Trade Execution | Jupiter Aggregator v6 | Best liquidity routing on Solana |
-| Validation | Zod | Runtime schema validation |
+<br/>
 
-### Frontend
-| Component | Technology | Why |
-|-----------|-----------|-----|
-| Framework | Next.js 14 (App Router) | Fast, server-side capable |
-| Language | TypeScript | Type safety across the stack |
-| Styling | Inline styles + Tailwind CSS | Full control, no class conflicts |
-| Fonts | Bebas Neue + JetBrains Mono + DM Sans | Engineering aesthetic |
-| UI Primitives | shadcn/ui (Select only) | Minimal dependency |
+## Quick start
 
----
+```bash
+git clone <repo-url> && cd voluma
 
-## Infrastructure Philosophy
+cd web && cp .env.example .env.local && bun install
+npx @better-auth/cli@latest migrate
 
-> **Voluma was built intentionally at zero infrastructure cost.**
+cd ../server && cp .env.example .env && bun install
+psql "$DATABASE_URL" -f migrations/001_voluma_tables.sql
+psql "$DATABASE_URL" -f migrations/002_reliability_and_security.sql
+bun src/index.ts
 
-This is not a limitation — it is a design constraint.
+cd web && bun run dev
+```
 
-Voluma is intentionally built to operate without paid infrastructure by leveraging:
+Full environment variables and setup steps live in each service's README. If you're deploying rather than running locally, read the [production database connection note](./server/README.md#database) first — the connection string that works locally is not the one that works on Vercel/Railway.
 
-- Solana public WebSocket RPC for ingestion
-- In-memory indexing for real-time evaluation
-- SQLite for local persistence
+<br/>
 
-This demonstrates that the full execution pipeline works end-to-end without external dependencies.
+## Security
 
-**With investment, the upgrade path is clear and non-breaking:**
-- Public RPC → Helius Yellowstone gRPC (already stubbed in `yellowstone-provider.ts`)
-- SQLite → PostgreSQL (conditionRepo/walletRepo interfaces abstract the DB layer)
-- Single server → multi-node (condition engine is stateless per evaluation)
-- In-memory queue → Redis Streams (EventQueue interface is drop-in replaceable)
+Voluma is custodial software — it holds real keys and signs real transactions on mainnet. The security model (encrypted storage, step-up verification, SSRF protection, RPC failover) and an honest list of what's hardened versus still on the roadmap are documented in [`server/README.md`](./server/README.md#security). Found a vulnerability? Please don't open a public issue — see [`CONTRIBUTING.md`](./CONTRIBUTING.md#reporting-a-security-issue).
 
-The architecture was designed for this migration from day one.
-
----
-
-## Competitive Landscape
-
-| Product | Chain | Real-time | Auto Trade | Encrypted Wallets | Open |
-|---------|-------|-----------|------------|---------------|------|
-| **Voluma** | **Solana** | **✓** | **✓** | **✓** | **✓** |
-| Gelato Network | EVM only | ✓ | ✓ | ✗ | ✗ |
-| Chainlink Automation | EVM only | ✓ | Partial | ✗ | ✗ |
-| Dialect | Solana | ✓ | ✗ | ✓ | Partial |
-| Generic alert bots | Various | Partial | ✗ | ✓ | Varies |
-
-**Voluma combines real-time condition evaluation, encrypted wallet management, and native Jupiter execution in one unified system — this combination does not currently exist as a packaged product on Solana.**
-
----
+<br/>
 
 ## Roadmap
 
-### Currently Shipped (Hackathon Build)
-- [x] Real-time Solana mainnet ingestion via WebSocket
-- [x] 4 condition types with configurable parameters
-- [x] Automated trade execution via Jupiter DEX
-- [x] Server-side AES-256 encrypted wallet per user
-- [x] Webhook delivery with retry logic and idempotency
-- [x] Visual node-based automation builder
-- [x] Live dashboard with WebSocket real-time updates
-- [x] Trade safety guard (rate limit, balance check, dedup)
-- [x] SQLite persistence for conditions, wallets, stats
+- Helius Yellowstone gRPC ingestion (decoded transaction data, no log-heuristic parsing)
+- Broader rate-limit coverage across read/list endpoints
+- Auth and/or rate limiting on currently public system endpoints
+- WebSocket origin validation as a second layer on top of session auth
+- Multi-condition chains (`IF this AND that → action`)
+- Telegram / Discord action targets
+- Historical trigger analytics
 
-### Near-term (Post-Investment Infrastructure)
-- [ ] Helius Yellowstone gRPC integration (already stubbed — sub-100ms decoded tx data)
-- [ ] User authentication (magic link / wallet sign-in)
-- [ ] Multi-condition chains (IF this AND that → action)
-- [ ] Telegram / Discord bot actions
-- [ ] Historical trigger analytics
-- [ ] Condition marketplace (share and fork automation strategies)
-
-### Vision
-- [ ] Cross-chain expansion (EVM via similar log-subscription architecture)
-- [ ] Strategy backtesting against historical on-chain data
-- [ ] Team workspaces for trading groups
-- [ ] API access for developers building on top of Voluma
-
----
-
-## Quick Start
-
-```bash
-# Clone
-git clone <repo>
-cd voluma
-
-# Start backend
-cd server
-cp .env.example .env          # Add WALLET_ENCRYPTION_KEY (≥32 chars)
-bun install
-bun run dev
-
-# Start frontend (new terminal)
-cd ../web
-cp .env.example .env.local    # Add NEXT_PUBLIC_API_URL=http://localhost:3001
-bun install
-bun run dev
-
-# Open http://localhost:3000
-```
-
-See [`server/README.md`](./server/README.md) and [`web/README.md`](./web/README.md) for full setup instructions.
-
----
-
-## Colosseum Frontier 2026
-
-Built for the Colosseum Frontier Hackathon (April–May 2026). Voluma represents a complete, working product — not a prototype or proof of concept. Every feature described above is implemented and running against Solana mainnet.
-
-The goal beyond the hackathon is the Colosseum Accelerator program. Voluma solves a real problem with real infrastructure, and the zero-cost build proves the model works before a dollar of infrastructure spend.
-
-Voluma demonstrates that real-time, automated execution on on-chain signals is not theoretical — it is already operational.
-
-The automated trade in the demo video is verifiable on Solscan. Real mainnet. Real transaction. Real token received.
-
----
+<br/>
 
 ## License
 
-MIT — see [LICENSE](LICENSE)
+MIT — see [LICENSE](./LICENSE).
 
----
-
-*Built on Solana. Powered by Jupiter. Designed for traders.*
+<div align="center">
+<sub>Built on Solana. Execution routed through Jupiter.</sub>
+</div>

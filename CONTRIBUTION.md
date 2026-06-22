@@ -129,9 +129,6 @@ cd web
 cp .env.example .env.local
 bun install
 
-# Generates Better Auth's schema (user / session / account / verification) from
-# the config in lib/auth.ts. Run this before the server's own SQL migrations —
-# see server/README.md#database.
 npx @better-auth/cli@latest migrate
 
 bun run dev

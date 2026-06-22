@@ -1,537 +1,276 @@
-# Voluma Server
+<div align="center">
 
-> Real-time Solana ingestion → condition evaluation → automated execution pipeline
+### Voluma Server
 
-The Voluma backend is a Fastify server written in TypeScript that runs on Bun. It streams transactions from Solana mainnet via WebSocket, evaluates user-defined conditions against every event in real time, and executes actions — including automated trades via Jupiter DEX — when conditions are met.
+Fastify + Bun service that ingests Solana mainnet in real time, evaluates user-defined conditions against it, and executes the result — including signing live trades.
 
----
+![Bun](https://img.shields.io/badge/Bun-000000?style=flat-square&logo=bun&logoColor=white)
+![Fastify](https://img.shields.io/badge/Fastify-000000?style=flat-square&logo=fastify&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?style=flat-square&logo=postgresql&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat-square&logo=docker&logoColor=white)
 
-## Architecture Overview
+[← Part of Voluma](../README.md)
+
+</div>
+
+<br/>
+
+## Architecture
 
 ```
 Solana Mainnet WebSocket
-         │
-         │  logsSubscribe (5 DEX programs + System Program)
+         │  logsSubscribe — 5 DEX program IDs + System Program
          ▼
-┌─────────────────────┐
-│  PublicRPCProvider  │  Parse raw logs → NormalizedEvent
-│  (ingestion layer)  │  Dedup by signature, frequency-based mint extraction
-└─────────┬───────────┘
-          │ emit('transaction', event)
-          ▼
-┌─────────────────────┐
-│    EventQueue       │  In-memory queue, max 5,000 items
-│  (concurrency=20)   │  20 concurrent handlers, backpressure via drop
-└─────────┬───────────┘
-          │ handler(event)
-          ▼
-┌─────────────────────┐
-│  ConditionEngine    │  O(1) inverted index lookup by wallet/token
-│  (evaluation layer) │  Sliding window counters for SWAP_BURST/TOKEN_VOLUME
-│                     │  Cooldown system, fire-once dedup cache
-└─────────┬───────────┘
-          │ matches[]
-          ▼
-┌─────────────────────┐
-│  ExecutionEngine    │  Dispatch actions per match result
-│  (action layer)     │  Retry logic (3x for webhook, 1x for trade)
-│                     │  Delivery-level idempotency
-└─────────┬───────────┘
-          │
-    ┌─────┴──────┐
-    ▼            ▼
-TradeExecutor  BroadcastServer
-(Jupiter DEX)  (WebSocket rooms)
+┌──────────────────────┐
+│  PublicRPCProvider    │  dedupe by signature, heuristic parse → selective
+│  (ingestion)          │  full-transaction enrichment, RPC failover hooks
+└──────────┬────────────┘
+           ▼
+┌──────────────────────┐
+│  EventQueue           │  bounded (5,000), 20 concurrent handlers,
+│  (backpressure)       │  drops rather than blocks under sustained load
+└──────────┬────────────┘
+           ▼
+┌──────────────────────┐
+│  ConditionEngine      │  inverted-index lookup, sliding windows,
+│  (evaluation)         │  cooldowns, fire-once dedup
+└──────────┬────────────┘
+           ▼
+┌──────────────────────┐
+│  ExecutionEngine      │  per-action retry, per-wallet trade locking,
+│  (dispatch)           │  database-level idempotency
+└──────────┬────────────┘
+     ┌─────┴──────┐
+     ▼            ▼
+TradeExecutor   BroadcastServer
+(Jupiter DEX)   (per-user WS rooms + sampled live feed)
 ```
 
----
+The HTTP API and the WebSocket server share one underlying `http.Server` — Fastify is configured with a custom `serverFactory` so both attach to it.
 
-## Project Structure
+<br/>
 
-```
-server/
-├── src/
-│   ├── index.ts                    # Server entry point, all HTTP routes, bootstrap
-│   │
-│   ├── ingestion/
-│   │   ├── provider.ts             # NormalizedEvent and IngestionProvider interfaces
-│   │   ├── public-rpc-provider.ts  # WebSocket-based Solana ingestion
-│   │   └── yellowstone-provider.ts # Helius gRPC stub (future upgrade path)
-│   │
-│   ├── conditions/
-│   │   ├── engine.ts               # Core condition evaluator
-│   │   └── types.ts                # Condition, ExecutionAction type definitions
-│   │
-│   ├── execution/
-│   │   ├── executor.ts             # Action dispatcher, retry, delivery dedup
-│   │   ├── tradeExecutor.ts        # Jupiter DEX quote + swap + confirm
-│   │   └── tradeGuard.ts           # Rate limiting, balance check, mint validation
-│   │
-│   ├── wallets/
-│   │   └── walletManager.ts        # AES-256 keypair encryption, SOL balance, withdraw
-│   │
-│   ├── ws/
-│   │   └── broadcast.ts            # WebSocket server, per-user rooms, keepalive
-│   │
-│   ├── queue/
-│   │   └── in-memory-queue.ts      # Concurrent queue with backpressure
-│   │
-│   └── db/
-│       ├── db.ts                   # SQLite connection, schema init, WAL mode
-│       ├── conditionRepo.ts        # Condition CRUD + execution count
-│       ├── statsRepo.ts            # Trigger statistics
-│       ├── walletRepo.ts           # Wallet record persistence
-│       ├── processedEventRepo.ts   # Deduplication cache (conditionId:signature)
-│       └── pendingTxRepo.ts        # Pending transaction tracking
-│
-├── data/                           # SQLite database files (auto-created)
-│   └── voluma.db
-├── .env.example
-├── package.json
-├── tsconfig.json
-└── README.md
-```
+## What's running under the hood
 
----
+<details>
+<summary><strong>Ingestion</strong> — <code>ingestion/public-rpc-provider.ts</code>, <code>transaction-parser.ts</code></summary>
+<br/>
 
-## Core Modules
+A single persistent WebSocket subscribes to five DEX program IDs plus the System Program, with per-wallet `mentions` filters added on demand. Notifications for the same signature are debounced for 40ms and the highest-priority subscription source kept, so a transaction matching multiple subscriptions isn't processed twice.
 
-### `ingestion/public-rpc-provider.ts`
+Every event is first parsed heuristically from raw log text alone — fast, low-confidence. Whether it then gets a full `getParsedTransaction` call for exact enrichment depends on whether anything is actually configured to care: wallet-specific subscriptions are always enriched, generic swaps only if a tracked mint or watched wallet currently exists, transfers only if a large-transfer condition is active. RPC call volume scales with what's being watched, not with total chain throughput.
 
-Connects to Solana mainnet via WebSocket and subscribes to log notifications for 5 DEX programs (Jupiter, Raydium, Orca, and others) plus the System Program.
+Enrichment itself computes pre/post token balance deltas and infers BUY vs. SELL vs. generic SWAP by correlating a matched wallet's SOL delta against its token deltas, with confidence scored `EXACT` / `HIGH` / `MEDIUM` / `LOW` depending on how cleanly a wallet was attributed.
 
-**What it does:**
-- Maintains a single persistent WebSocket connection with exponential backoff reconnect
-- Subscribes to `logsSubscribe` for each DEX program
-- Deduplicates events by signature (DEDUP_MAX=12,000, LRU-style trim)
-- Parses raw program logs into `NormalizedEvent` objects:
-  - **Type detection**: SWAP (DEX program in logs) or TRANSFER (System Program)
-  - **Wallet detection**: Two-pass — exact pubkey match, then prefix heuristic
-  - **Token mint extraction**: Two-pass — explicit `Mint:` log pattern, then frequency analysis (most repeated non-program pubkey across all log lines)
-  - **Amount extraction**: Regex on `amount:` log pattern
-  - **Confidence scoring**: HIGH (exact wallet match) / MEDIUM (prefix or amount present) / LOW (neither)
-- Emits `transaction` events consumed by the EventQueue
+A Yellowstone gRPC provider (`yellowstone-provider.ts`) is **stubbed but not implemented** — it satisfies the same ingestion interface and documents the upgrade path, but calling it throws today.
 
-> **Note on parsing**: Wallet and mint detection use heuristic approaches — exact pubkey matching and frequency-based inference from log data. This is intentional and pragmatic. The Yellowstone upgrade path replaces heuristics with fully decoded canonical transaction data.
+</details>
 
-**Key design decision**: Frequency-based mint extraction compensates for DEX programs that don't emit explicit mint labels. The token mint appears in multiple CPI invocation logs, making it the most repeated non-program pubkey — a reliable heuristic.
+<details>
+<summary><strong>Condition Engine</strong> — <code>conditions/engine.ts</code></summary>
+<br/>
 
-**Upgrade path**: `yellowstone-provider.ts` is a drop-in replacement stub. Helius Yellowstone gRPC delivers fully decoded transaction data at <100ms latency. The rest of the system requires zero changes because both implement `IngestionProvider`.
+The matching core. Conditions live in inverted indexes (by wallet, by token mint, plus a global set for unfiltered conditions) so evaluating an event against thousands of conditions is a lookup, not a scan.
 
----
+`SWAP_BURST` and `TOKEN_VOLUME` use sliding time windows and are **edge-triggered** — they fire once on the transition into threshold, not on every event while already above it. `LARGE_TRANSFER` is a single-event check. `WALLET_ACTIVITY` supports optional token, transaction-type, and minimum-amount filters and requires confidence above the lowest tier. A per-`(condition, signature)` fire cache prevents the same event firing the same condition twice even under concurrent evaluation, and mint matching falls back to a raw-log substring check when exact field extraction misses.
 
-### `conditions/engine.ts`
+</details>
 
-The core condition evaluation system. Uses inverted indexes for O(1) candidate lookup — evaluating a transaction against thousands of conditions takes microseconds, not milliseconds.
+<details>
+<summary><strong>Execution Engine</strong> — <code>execution/executor.ts</code></summary>
+<br/>
 
-**Index structure:**
-```typescript
-walletIdx:      Map<walletAddress, Set<conditionId>>  // WALLET_ACTIVITY
-tokenIdx:       Map<tokenMint, Set<conditionId>>       // SWAP_BURST/TOKEN_VOLUME
-globalBurst:    Set<conditionId>                       // Any token (no mint filter)
-swapTokenConds: Set<conditionId>                       // Token-specific swap conditions
-                                                       // (rawLogs fallback path)
-```
+Dispatches the actions on a matched condition with **three independent layers of idempotency**: an in-memory fire cache, a database-level insert-if-absent check, and a trade-submission dedup cache — the last one specifically guarding the irreversible trade path.
 
-**Condition types:**
+Webhook and log actions retry up to three times with exponential backoff; trades get exactly one attempt — irreversible side effects aren't retried. Trade dispatch is **serialized per wallet** through an in-memory lock, so two conditions firing for the same wallet at once can't both believe they have sufficient balance. Execution-limit modes ("once" / "limited" / "unlimited") are enforced with a single atomic SQL statement, not a check-then-write that could race.
 
-| Type | Logic |
-|------|-------|
-| `WALLET_ACTIVITY` | Exact wallet match, optional transaction type + min amount filter. Requires confidence ≥ MEDIUM. |
-| `SWAP_BURST` | Sliding window counter — fires once when swap count crosses threshold, resets after cooldown |
-| `TOKEN_VOLUME` | Sliding window sum — fires once when total SOL volume crosses threshold |
-| `LARGE_TRANSFER` | Single event threshold — any TRANSFER with amount ≥ minSol |
+</details>
 
-**Mint matching (two-tier):**
-1. `event.tokenMint === condition.tokenMint` (exact)
-2. `event.rawLogs?.includes(condition.tokenMint)` (substring in joined logs)
+<details>
+<summary><strong>Trade Execution</strong> — <code>execution/tradeExecutor.ts</code>, <code>jupiter.ts</code>, <code>tradeGuard.ts</code></summary>
+<br/>
 
-This compensates for unreliable log-based mint extraction. A 44-char base58 string appearing in logs is an extremely reliable signal even without exact field extraction.
+Quotes come from Jupiter Aggregator v6, cached briefly and rejected outright if price impact exceeds a configurable cap. A quote's age is checked again immediately before the swap transaction is built — a stale quote is never executed against. Before any of that, `TradeGuard` runs its own independent rate limiter, live balance check, mint format validation, and (for sells) an integer-safe percentage-of-balance calculation.
 
-**Cooldown system**: After a condition fires, it enters cooldown for `cooldownSeconds`. Sliding window state (`aboveThreshold`) resets on cooldown expiry, preventing immediate re-fire.
+Transactions are submitted with retries disabled at the RPC level (`maxRetries: 0`) and confirmed by polling rather than resubmitting, to avoid double-submission. A trade that doesn't confirm within the polling window comes back `PENDING`, not failed, and is picked up by a background checker.
 
-**Fire cache**: `Set<conditionId:signature>` prevents the same event from firing the same condition twice even under concurrent processing.
+</details>
 
----
+<details>
+<summary><strong>Wallet Custody</strong> — <code>wallets/walletManager.ts</code></summary>
+<br/>
 
-### `execution/executor.ts`
+Each user gets one server-generated keypair. The current encryption scheme is **AES-256-GCM**, with a random salt and IV per wallet and the encryption key derived via `scrypt` rather than used directly — not a shared static key. A legacy AES-256-CBC decrypt path exists only for reading pre-migration records and is never used to write new ones; any wallet still on the old scheme is transparently re-encrypted the next time it's used, with no read interruption.
 
-Dispatches actions when conditions match. Handles retry logic, delivery-level idempotency, and the notification pipeline.
+Exporting a key or withdrawing funds requires a short-lived, single-use step-up token (`security/sensitiveActionManager.ts`) plus a typed confirmation phrase, gated separately from normal session auth.
 
-**Action processing order:**
-1. Skip `NOTIFY` actions (processed last, after all other actions complete)
-2. Dispatch `WEBHOOK`, `LOG`, and `TRADE` actions with retry
-3. Send WebSocket notification including results of all actions
+</details>
 
-**Retry policy:**
-- `WEBHOOK`: Up to 3 attempts, exponential backoff (500ms, 1000ms)
-- `TRADE`: 1 attempt only (trades are not safe to retry — side effects are irreversible)
-- `LOG`: No retry (fire-and-forget)
+<details>
+<summary><strong>RPC Failover</strong> — <code>rpc/rpcManager.ts</code></summary>
+<br/>
 
-**Delivery dedup**: `Set<conditionId:signature>` at the executor level. Second dedup layer after the engine's fire cache.
+Built from a provider chain: Helius primary, an optional secondary, and the public Solana RPC always present as a final fallback. Each provider tracks consecutive failures and a rolling failure window; crossing a threshold triggers an automatic failover and a live `SYSTEM_STATUS` push to every connected client, reporting `HEALTHY`, `DEGRADED`, or `FALLBACK`.
 
-**Webhook delivery includes:**
-- `X-Voluma-Idempotency-Key`: `conditionId:signature`
-- `X-Voluma-Delivery-Id`: unique per-match delivery ID
-- `X-Voluma-Attempt`: current attempt number
+</details>
 
----
+<details>
+<summary><strong>Realtime Delivery</strong> — <code>ws/broadcast.ts</code></summary>
+<br/>
 
-### `execution/tradeExecutor.ts`
+A WebSocket server sharing the API's HTTP server. Connections authenticate via a session token in the query string and are grouped per user, supporting multiple simultaneous tabs or devices. Per-user messages (trigger events, trade lifecycle) go to one user's sockets; the live transaction feed and system-status messages broadcast to everyone. The public live feed is **sampled** — only every fifth ingested event is broadcast — to keep output bounded regardless of underlying chain volume; condition evaluation itself still sees every event.
 
-Executes trades via Jupiter DEX Aggregator v6.
+</details>
 
-**Trade flow:**
-```
-1. GET /quote  →  Jupiter quotes best route for inputMint→outputMint
-2. POST /swap  →  Jupiter builds versioned transaction
-3. Deserialize + sign with user keypair
-4. sendRawTransaction (maxRetries=0, prevents client-side duplicate submission)
-5. Poll getSignatureStatus until confirmed/finalized (30s timeout)
+<details>
+<summary><strong>Persistence</strong> — <code>db/</code></summary>
+<br/>
+
+PostgreSQL via Supabase, accessed through a pooled connection tuned for Supavisor. No ORM — each table has one repository module exporting plain functions. Conditions are stored as a JSONB blob keyed by ID rather than fully normalized into columns, which keeps the condition shape free to evolve.
+
+</details>
+
+<br/>
+
+## API surface
+
+A REST API plus one authenticated WebSocket channel. Wallet, condition, and trade routes require a Bearer session token validated against the shared `session` table; wallet export and withdrawals additionally require a consumed step-up verification token and a typed confirmation. The live dashboard connects to `wss://<api>/ws?token=<session-token>` for a single channel carrying the live transaction feed, per-user trigger and trade-lifecycle events, and system health.
+
+The full route list, payload shapes, and per-route rate limits are kept in the route definitions in `src/index.ts` rather than duplicated here — a second copy tends to drift from the code that actually enforces it.
+
+<br/>
+
+## Database
+
+PostgreSQL via Supabase. Two things have to happen before the server will boot cleanly against a fresh database, in this order:
+
+```bash
+
+cd web && npx @better-auth/cli@latest migrate
+
+
+cd ../server
+psql "$DATABASE_URL" -f migrations/001_voluma_tables.sql
+psql "$DATABASE_URL" -f migrations/002_reliability_and_security.sql
 ```
 
-**BUY**: SOL → token (ExactIn mode, spend exact SOL amount)
-**SELL**: token → SOL (ExactIn mode, sell exact token amount)
+| Table | Holds | Source |
+|---|---|---|
+| `user`, `session`, `account`, `verification` | Identity, sessions, OAuth tokens | Better Auth CLI |
+| `wallets` | Encrypted custodial wallet per user — public key, ciphertext, IV, KDF salt, encryption version | `001_voluma_tables.sql` |
+| `conditions` | One automation per row, stored as JSONB, plus an execution counter | `001_voluma_tables.sql` |
+| `trigger_stats` | Per-condition trigger count and last-fired timestamp | `001_voluma_tables.sql` |
+| `pending_txs` | Trades/withdrawals submitted but not yet confirmed | `001_voluma_tables.sql` |
+| `processed_events` | The database-level idempotency ledger | `001_voluma_tables.sql` |
+| `trade_executions` | Full trade history — amounts, slippage, price impact, route, timing | `002_reliability_and_security.sql` |
+| `wallet_activity_logs` | Security-relevant audit trail (creation, export, withdrawal, trade) | `002_reliability_and_security.sql` |
 
----
+**Local vs. production connection string.** Supabase's direct host (`db.<project-ref>.supabase.co:5432`) is what `.env.example` shows and what works for local development. In production, on platforms like Vercel or Railway, that direct connection generally doesn't — switch `DATABASE_URL` to the pooled Supavisor connection instead, on both the server and the web app:
 
-### `execution/tradeGuard.ts`
+```env
+# Local
+DATABASE_URL=postgresql://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres
 
-Multi-layer safety system that runs before every trade:
-
-```
-checkRateLimit(userId)    →  Max 5 trades/minute per user (in-memory window)
-validateMint(tokenMint)   →  Base58 format check before hitting Jupiter
-getExecutionCount(condId) →  Enforce maxExecutions / allowRepeatedExecution
-checkBalance(publicKey)   →  Live RPC balance ≥ tradeAmount + 0.005 SOL fee buffer
-markTradeSubmitted(key)   →  Trade-level dedup (conditionId:signature)
-```
-
-Guards run cheapest-first (in-memory before RPC calls).
-
----
-
-### `wallets/walletManager.ts`
-
-Manages per-user dedicated trading wallets with server-side encrypted key storage.
-
-**Encryption**: AES-256-CBC with random IV per wallet. Key derived from `WALLET_ENCRYPTION_KEY` env var (padded/truncated to 32 bytes).
-
-```typescript
-encrypt(secretKey) → { encryptedKey: hex, iv: hex }  // stored in DB
-decrypt(encryptedKey, iv) → Uint8Array                // only when trading
+# Production — note the project-ref folded into the username, and port 6543
+DATABASE_URL=postgresql://postgres.<project-ref>:<password>@aws-<region>.pooler.supabase.com:6543/postgres
 ```
 
-**Keypair is only decrypted when:**
-- Executing a trade (executor.ts calls `getKeypair`)
-- Processing a withdrawal (withdraw route calls `getKeypair`)
+This is also why `web/lib/auth.ts` explicitly strips `sslmode` from the URL and sets `ssl` directly when constructing the Postgres pool — `pg` otherwise applies the parsed connection string's own SSL params last and silently overrides an explicit `ssl` config.
 
-The decrypted keypair exists in memory only for the duration of the operation.
+<br/>
 
-**Security model**: The server holds encrypted private keys in the database and controls the encryption key via environment variables. This protects against database-only breaches but means the server has access to sign transactions on behalf of users. For true non-custodial trading (user-held keys), the upgrade path is delegated trading authority.
+## Background jobs
 
-**Trade dedup cache**: 5,000-entry LRU cache via `markTradeSubmitted()` prevents duplicate trade submissions for the same condition:signature pair.
+| Job | Cadence | Does |
+|---|---|---|
+| Pending transaction checker | 15s | Confirms, fails, or times out (5 min) unresolved transactions |
+| Cleanup | every 30 min | Prunes resolved idempotency/pending records past their retention window |
+| Session cache pruning | 5 min | Clears expired entries from the in-memory session lookup cache |
 
----
+<br/>
 
-### `ws/broadcast.ts`
+## Environment variables
 
-WebSocket server with per-user room isolation.
-
-```
-/ws?userId=<uuid>  →  join room for userId
-```
-
-**`sendToUser(userId, payload)`**: Sends to all sockets in a user's room (supports multiple tabs/devices per user).
-
-**`broadcast(payload)`**: Sends to all connected sockets (used for live event feed — every client sees the same transaction stream).
-
-Keepalive: 25-second ping interval per socket.
-
----
-
-### `queue/in-memory-queue.ts`
-
-Bounded concurrent queue. 
-
-- Max size: 5,000 items (drops events when full, increments `droppedEvents` counter)
-- Concurrency: 20 simultaneous handlers
-- Zero dependencies
-
----
-
-### Background Systems
-
-**Pending Transaction Checker** (`index.ts:222-267`):
-- Polls every 15 seconds for pending transaction confirmation
-- Updates `pending_txs` table on confirmation/failure
-- Ensures UI always reflects on-chain state
-
-**Cleanup Jobs** (`index.ts:271-282`):
-- Deletes `processed_events` older than 1 hour
-- Deletes confirmed `pending_txs` older than 24 hours
-- Prevents database growth
-
----
-
-### `db/db.ts`
-
-SQLite database initialized on startup. WAL mode enabled for better concurrent read performance.
-
-**Schema:**
-
-```sql
-wallets (
-  userId       TEXT PRIMARY KEY,
-  publicKey    TEXT NOT NULL UNIQUE,
-  encryptedKey TEXT NOT NULL,
-  iv           TEXT NOT NULL,
-  createdAt    INTEGER NOT NULL,
-  lastUsedAt   INTEGER
-)
-
-conditions (
-  id             TEXT PRIMARY KEY,
-  userId         TEXT NOT NULL,
-  data           TEXT NOT NULL,     -- full Condition as JSON blob
-  executionCount INTEGER DEFAULT 0, -- successful TRADE executions only
-  createdAt      INTEGER NOT NULL
-)
-
-trigger_stats (
-  conditionId   TEXT PRIMARY KEY,
-  triggerCount  INTEGER DEFAULT 0,
-  lastTriggered INTEGER
-)
-
-processed_events (
-  conditionId  TEXT NOT NULL,
-  signature    TEXT NOT NULL,
-  timestamp    INTEGER NOT NULL,
-  PRIMARY KEY (conditionId, signature)
-)
-
-pending_txs (
-  txHash       TEXT PRIMARY KEY,
-  userId       TEXT NOT NULL,
-  inputMint    TEXT,
-  outputMint   TEXT,
-  rawAmountIn  INTEGER,
-  status       TEXT NOT NULL,  -- PENDING | CONFIRMED | FAILED
-  createdAt    INTEGER NOT NULL
-)
-```
-
----
-
-## API Reference
-
-### Wallet Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/wallet/:userId` | Get wallet info, SOL balance, token holdings, pending txs |
-| `POST` | `/wallet/:userId/create` | Create trading wallet (idempotent) |
-| `POST` | `/wallet/:userId/withdraw/sol` | Withdraw SOL to external address |
-| `POST` | `/wallet/:userId/withdraw/token` | Withdraw SPL tokens to external address |
-
-**Withdraw body:**
-```json
-{
-  "destinationAddress": "Base58PublicKey",
-  "amountSol": 0.1
-}
-```
-
-### Condition Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/conditions/:userId` | List all conditions with trigger stats |
-| `POST` | `/conditions` | Create new condition |
-| `DELETE` | `/conditions/:id` | Delete condition |
-| `PATCH` | `/conditions/:id/toggle` | Enable / disable condition |
-
-**Create condition body:**
-```json
-{
-  "userId": "string",
-  "name": "string",
-  "type": "WALLET_ACTIVITY | SWAP_BURST | TOKEN_VOLUME | LARGE_TRANSFER",
-  "enabled": true,
-  "wallet": "optional - Base58 wallet address",
-  "transactionType": "BUY | SELL | TRANSFER | ANY",
-  "minAmountSol": 0.5,
-  "tokenMint": "optional - Base58 mint address",
-  "minSwaps": 50,
-  "minVolumeSol": 1000,
-  "windowSeconds": 30,
-  "minSol": 100,
-  "cooldownSeconds": 60,
-  "maxExecutions": 1,
-  "allowRepeatedExecution": false,
-  "actions": [
-    {
-      "type": "NOTIFY | WEBHOOK | LOG | TRADE",
-      "webhookUrl": "https://...",
-      "tradeDirection": "BUY | SELL",
-      "tradeTokenMint": "Base58MintAddress",
-      "tradeAmountSol": 0.1,
-      "tradeSlippageBps": 100
-    }
-  ]
-}
-```
-
-### Trade Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/trade/quote` | Get Jupiter quote for token pair |
-| `POST` | `/trade/manual` | Execute manual trade with guard checks |
-
-### Utility Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/webhook/test` | Test a webhook URL with sample payload |
-| `GET` | `/stats` | System metrics — queue depth, events, trades, uptime |
-
-### WebSocket
-
-```
-ws://localhost:3001/ws?userId=<uuid>
-```
-
-**Messages received by client:**
-
-```json
-// Live transaction events (broadcast to all)
-{ "type": "LIVE_EVENT", "signature": "...", "eventType": "SWAP", "tokenMint": "...", "timestamp": 1234567890 }
-
-// Condition triggered (sent to specific user only)
-{
-  "type": "TRIGGER",
-  "conditionId": "...",
-  "conditionName": "...",
-  "signature": "...",
-  "eventType": "SWAP",
-  "matchedAt": 1234567890,
-  "explanation": { "reason": "...", "confidence": "HIGH", "matchedFields": [...], "details": {...} },
-  "execution": {
-    "deliveryId": "...",
-    "actions": [...],
-    "summary": { "total": 2, "success": 2, "failed": 0 }
-  }
-}
-```
-
----
-
-## Environment Variables
+<details>
+<summary><strong>Show full list</strong></summary>
 
 ```env
 # Required
-WALLET_ENCRYPTION_KEY=your-secret-key-minimum-32-characters-long
+DATABASE_URL=postgresql://...                # see the Database section above for local vs. production format
+WALLET_ENCRYPTION_KEY=...                    # ≥ 32 characters
+BETTER_AUTH_SECRET=...                       # ≥ 16 characters
 
-# Jupiter Api Key
-JUPITER_API_KEY=your-jupiter-api-key
+# Origins / environment
+FRONTEND_URL=https://your-web-app.example    # comma-separated CORS allow-list
+NODE_ENV=production
 
-# Optional — defaults to public mainnet RPC
-SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
-RPC_WSS=wss://api.mainnet-beta.solana.com
+# RPC providers
+HELIUS_API_KEY=...
+HELIUS_RPC_HTTP_URL=...
+HELIUS_RPC_WS_URL=...
+SECONDARY_HELIUS_API_KEY=...
+SECONDARY_RPC_HTTP_URL=...
+SECONDARY_RPC_WS_URL=...
+SECONDARY_RPC_LABEL=...
+SOLANA_RPC_URL=...
+RPC_WSS=...
 
-# Optional — CORS origin for frontend
-FRONTEND_URL=http://localhost:3000
+# Jupiter
+JUPITER_API_KEY=...
+JUPITER_QUOTE_MAX_AGE_MS=12000
+JUPITER_MAX_PRICE_IMPACT_PCT=25
 
-# Optional — server port (default: 3001)
+# Misc
 PORT=3001
-
-# Optional — SQLite database directory (default: ./data)
-DB_PATH=./data
-
-# Optional — enable verbose mint matching debug logs
 DEBUG_MINT_MATCHING=false
 ```
 
----
+The public Solana RPC is always included as the final fallback regardless of configuration. The server validates the three required variables at startup and exits immediately if any are missing or too short. `NEXT_PUBLIC_APP_URL` and `BETTER_AUTH_URL` belong to the **web app's** environment, not this one — see [`web/README.md`](../web/README.md#environment-variables).
 
-## Local Setup
+</details>
 
-### Prerequisites
+<br/>
 
-- [Bun](https://bun.sh) >= 1.0 (or Node.js >= 18)
-- Git
-
-### Installation
+## Local setup
 
 ```bash
-# From the server directory
 cd server
+cp .env.example .env        
 
-# Install dependencies
-bun install
 
-# Copy environment file
-cp .env.example .env
+psql "$DATABASE_URL" -f migrations/001_voluma_tables.sql
+psql "$DATABASE_URL" -f migrations/002_reliability_and_security.sql
 
-# Edit .env — set WALLET_ENCRYPTION_KEY to any string ≥32 chars
-# Example: WALLET_ENCRYPTION_KEY=my-super-secret-key-at-least-32-chars-long
-
-# Run in development mode
-bun run dev
+bun src/index.ts
 ```
 
-Server starts on `http://localhost:3001`.
-
-The SQLite database is created automatically at `./data/voluma.db` on first run.
-
-### Production Build
+**Docker:**
 
 ```bash
-bun run build
-bun run start
+docker build -t voluma-server .
+docker run -p 3001:3001 --env-file .env voluma-server
 ```
 
----
+Built on `oven/bun:1.1`, production dependencies only, runs `bun run src/index.ts` directly with no separate build step. `HEALTHCHECK` polls `GET /health` every 30 seconds.
 
-## Key Design Decisions
+<br/>
 
-**Why SQLite instead of Postgres?**
-Zero infrastructure. The product is designed to run at zero cost. SQLite with WAL mode handles the read/write patterns well — conditions are read frequently, written rarely. The conditionRepo and walletRepo interfaces abstract the DB layer cleanly for future migration.
+## Security
 
-**Why in-memory queue instead of Redis Streams?**
-Zero infrastructure cost. The EventQueue with 5,000 item capacity and 20 concurrent workers handles current throughput with headroom. The interface is designed for drop-in replacement with a durable queue when scale requires it.
+This is custodial software handling real funds — here's where things actually stand.
 
-**Why public RPC WebSocket instead of Helius?**
-Zero cost. The public endpoint is sufficient for the current load. The `yellowstone-provider.ts` stub documents the exact upgrade path — install one package, set two env vars, replace one import. Nothing else changes.
+**In place today:** encrypted wallet storage with a per-wallet derived key; step-up verification and typed confirmation for export and withdrawals; SSRF protection on webhook testing and dispatch; ownership checks on every wallet/condition/trade route; three-layer trade idempotency with per-wallet locking; exact-match CORS; pre-trade balance, rate-limit, mint-format, freshness, and price-impact checks.
 
-**Why AES-256-CBC for wallet encryption?**
-Widely audited, deterministic (important for key storage), and sufficient for the threat model: an attacker with database access cannot recover private keys without the encryption key, which is stored separately in the environment.
+**Not yet hardened:** a couple of system/telemetry endpoints are intentionally public today and not yet individually rate-limited; most list/read routes rely on session auth alone rather than per-route throttling; the WebSocket layer authenticates by session token but doesn't yet separately validate connection origin. These are the first items in the [roadmap](../README.md#roadmap).
 
----
+Found something? Please report it privately — see [`CONTRIBUTING.md`](../CONTRIBUTING.md#reporting-a-security-issue).
 
-## Performance Characteristics
+<br/>
 
-| Metric | Value | Notes |
-|--------|-------|-------|
-| Event processing latency | <50ms | From WebSocket message to condition evaluation — applies to transactions from monitored DEX programs and System Program |
-| Trade execution latency | 400–800ms | Jupiter quote + tx build + send + confirm |
-| Queue capacity | 5,000 events | Events dropped beyond this (drop rate tracked) |
-| Concurrent handlers | 20 | Tune via `EventQueue` constructor |
-| Condition engine lookup | O(1) | Inverted index, constant time per event |
-| WebSocket connections | Unlimited | One room per userId, multiple sockets per room |
-
----
-
-## Infrastructure Upgrade Path
-
-Current stack → Production stack (no code changes required):
+## Upgrade path
 
 ```
-Public RPC WebSocket     →  Helius Yellowstone gRPC (yellowstone-provider.ts stub)
-SQLite                   →  PostgreSQL (swap repo implementations)
-In-memory queue          →  Redis Streams (swap EventQueue implementation)
-Single Fastify instance  →  Multiple instances behind load balancer
-                            (condition engine is evaluation-stateless)
+Public/Helius WebSocket RPC  →  Helius Yellowstone gRPC (stub already in place)
+In-memory EventQueue         →  Redis Streams / durable queue (same interface)
+Single Fastify instance      →  Multiple instances behind a load balancer
 ```
